@@ -33,6 +33,7 @@ EXCEL_PATH = "raid.xlsx"
 ACTION_WINDOW = 600        # 행동 가능 시간(초) = 10분
 BASE_HP = 120
 BONUS_PER_ENHANCE = 2      # 강화 1당 +2
+MAX_SKILLS_PER_PLAYER = 2   # 한 사람이 새길 수 있는 영문 수
 MAX_ENHANCE_TOTAL = 10     # 공격강화+방어강화 합계 상한 (확인 필요)
 JINGJO_HP = 180            # 징조: 최대 체력
 
@@ -497,7 +498,11 @@ def load_raid(path, channel, group=None):
         if au + du > MAX_ENHANCE_TOTAL:
             warns.append(f"{name}: 강화 합계 {au + du} > {MAX_ENHANCE_TOTAL}")
         skills = {}
-        for s in str(x[4] or "").split(","):
+        raw = str(x[4] or "").replace("，", ",").replace("、", ",")   # 전각 쉼표도 인식
+        entries = [t for t in raw.split(",") if t.strip()]
+        if len(entries) > MAX_SKILLS_PER_PLAYER:
+            warns.append(f"{name}: 영문 {len(entries)}개 (최대 {MAX_SKILLS_PER_PLAYER}개)")
+        for s in raw.split(","):
             s = s.strip()
             if not s: continue
             if s.startswith("모사="):
