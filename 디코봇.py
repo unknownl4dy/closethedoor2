@@ -32,7 +32,7 @@ from discord import app_commands
 from openpyxl import Workbook, load_workbook
 
 EXCEL_PATH = "raid.xlsx"
-NEXT_ACT_DELAY = 10       # 공격 결과 카드 이후 다음 막이 나오기 전 대기 시간(초)
+NEXT_ACT_DELAY = 5        # 공격 결과 카드 이후 다음 막이 나오기 전 대기 시간(초)
 ACTION_WINDOW = 600        # 행동 가능 시간(초) = 10분
 BASE_HP = 120
 BONUS_PER_ENHANCE = 2      # 강화 1당 +2
@@ -282,6 +282,17 @@ def preroll(p: Player, a: Action):
     elif s == "선포": a.pre = {"v": 5 + d(10)}
     elif s == "보호":
         v, det = def_roll(p); a.pre = {"v": v, "det": det}
+
+
+def big_value(a: Action) -> str:
+    """영문 카드에 크게 보여줄 핵심 수치 (피해 / 회복량 / 보호막)"""
+    s, pr = a.skill, a.pre
+    if s in ("강신", "천도", "행운", "중독", "혼란", "억제", "수복", "보호"): return str(pr["v"])
+    if s == "복수": return str(pr["v"] + pr["extra"])
+    if s == "역살": return str(pr["v"] + a.value)
+    if s in ("기도", "선포"): return f"+{pr['v']}"
+    if s == "분배": return f"+{a.value}"
+    return ""
 
 
 def apply_heal(r: Raid, p: Player, a: Action):
@@ -824,9 +835,9 @@ def make_sample():
     wb = Workbook()
     ws = wb.active; ws.title = "사귀"
     ws.append(["이름", "체력", "체력공개", "공격보너스", "막수", "조"])
-    ws.append(["사귀", 200, "N", 0, 4, 1])
-    ws.append(["사귀", 200, "N", 0, 4, 2])
-    ws.append(["사귀", 200, "N", 0, 4, 3])
+    ws.append(["사귀", 500, "N", 0, 8, 1])
+    ws.append(["사귀", 500, "N", 0, 8, 2])
+    ws.append(["사귀", 500, "N", 0, 8, 3])
     ws = wb.create_sheet("영문")
     ws.append(["영문명", "횟수", "새김가능인원"])
     for row in [("각광", 2, 2), ("항거", 1, 2), ("사활", 1, 2), ("보호", 2, 2), ("징조", None, 1),
@@ -927,7 +938,19 @@ TARGET_LABEL = {"각광": "대신 받는 대상", "보호": "보호 대상", "�
                 "분배": "회복 대상", "정화": "정화 대상", "역행": "횟수 +1 대상"}
 
 
-async def submit(i: discord.Interaction, kind, skill="", members=(), value=None, name=None):
+NOTE_DESC = "행동 묘사 (선택) 예: 칼을 휘두른다"
+
+
+def clean_note(text):
+    """지문: 마크다운이 깨지지 않게 특수문자를 빼고 길이를 제한"""
+    if not text:
+        return ""
+    for ch in "*_~`|>":
+        text = text.replace(ch, "")
+    return text.strip()[:200]
+
+
+async def submit(i: discord.Interaction, kind, skill="", members=(), value=None, name=None, note=None):
     """모든 행동 명령어가 공통으로 거치는 처리 (kind: 공격 / 방어 / 영문)"""
     async def no(msg): await i.response.send_message(msg, ephemeral=True)
 
@@ -941,6 +964,7 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
     if not p.alive: return await no("행동 불능 상태입니다.")
     if p.uid in raid.actions: return await no("이번 막에는 이미 행동했습니다.")
 
+    note = clean_note(note)
     a = Action(p.uid, kind)
     if kind == "공격": a.roll, a.det = atk_roll(p)      # 누르는 순간 굴려서 바로 보여줌
     elif kind == "방어": a.roll, a.det = def_roll(p)
@@ -980,13 +1004,15 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
             txt = raid.gimmick.get("preview", "알 수 없음")
             await i.response.send_message(f"예지: 이번 전조 → {txt} (억제 등 이번 막 효과 적용 전)\n남은 시간: {remain_text(raid)}", ephemeral=True)
             raid.actions[p.uid] = a
-            await raid.channel.send(f"🔮 **{p.name}**: [예지] 이번 전조의 결과를 미리 읽었다")   # 모두에게 공개
+            await raid.channel.send(f"🔮 **{p.name}**: [예지] 이번 전조의 결과를 미리 읽었다" + (f"\n*{note}*" if note else ""))   # 모두에게 공개
             maybe_done(raid)
             return
     raid.actions[p.uid] = a
     if kind == "영문":
+        effect = SKILL_EFFECT.get(skill, "").format(v=a.value, n=a.name)
+        big = big_value(a)
         em = discord.Embed(title=f"✨ 영문 [{skill}]",
-                           description=SKILL_EFFECT.get(skill, "").format(v=a.value, n=a.name), color=0x9B59B6)
+                           description=(f"# {big}\n" if big else "") + effect, color=0x9B59B6)
         if a.targets:
             em.add_field(name=TARGET_LABEL.get(skill, "대상"),
                          value=", ".join(raid.players[u].name for u in a.targets), inline=True)
@@ -999,11 +1025,13 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         em.add_field(name="남은 횟수", value=f"({n_left}/{max(n_left, p.skill_max.get(skill, n_left))})", inline=True)
     else:
         atk = kind == "공격"
+        # 합산값을 가장 큰 글씨로, 바로 아래에 굴림 + 보정 내역
+        detail = f"\n{a.det}" if a.det != str(a.roll) else ""
         em = discord.Embed(title="⚔️ 기본 공격" if atk else "🛡️ 기본 방어",
-                           description=f"# {a.roll}", color=0xE67E22 if atk else 0x3498DB)
-        if a.det != str(a.roll):
-            em.add_field(name="굴림 내역", value=f"{a.det} = {a.roll}", inline=True)
+                           description=f"# {a.roll}{detail}", color=0xE67E22 if atk else 0x3498DB)
     em.add_field(name="남은 시간", value=remain_text(raid), inline=True)
+    if note:
+        em.description = f"*{note}*\n" + (em.description or "")      # 지문은 이탤릭으로 맨 위에
     em.set_author(name=p.name)
     em.set_footer(text=f"현재 체력 {hp_bar(p.hp, p.max_hp)} {p.hp}/{p.max_hp}")
     await i.response.send_message(embed=em)      # 모두에게 공개
@@ -1012,20 +1040,23 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
 
 # ----- 기본 행동 -----
 @tree.command(name="공격", description="이번 막에 기본 공격을 합니다")
-async def cmd_attack(i: discord.Interaction):
-    await submit(i, "공격")
+@app_commands.describe(지문=NOTE_DESC)
+async def cmd_attack(i: discord.Interaction, 지문: str = None):
+    await submit(i, "공격", note=지문)
 
 
 @tree.command(name="방어", description="이번 막에 기본 방어를 합니다")
-async def cmd_defend(i: discord.Interaction):
-    await submit(i, "방어")
+@app_commands.describe(지문=NOTE_DESC)
+async def cmd_defend(i: discord.Interaction, 지문: str = None):
+    await submit(i, "방어", note=지문)
 
 
 # ----- 영문: 영문마다 자기만의 명령어. 입력칸도 그 영문에 필요한 것만 나옴 -----
 def add_simple_skill(skill):                      # 추가 입력이 없는 영문
     @tree.command(name=skill, description=f"영문 [{skill}]을(를) 사용합니다")
-    async def _cmd(i: discord.Interaction):
-        await submit(i, "영문", skill)
+    @app_commands.describe(지문=NOTE_DESC)
+    async def _cmd(i: discord.Interaction, 지문: str = None):
+        await submit(i, "영문", skill, note=지문)
 
 
 for _sk in ["항거", "사활", "중독", "복수", "혼란", "강신", "천도", "행운", "억제", "수복", "선포", "예지"]:
@@ -1033,45 +1064,45 @@ for _sk in ["항거", "사활", "중독", "복수", "혼란", "강신", "천도"
 
 
 @tree.command(name="각광", description="영문 [각광]을(를) 사용합니다")
-@app_commands.describe(대상자1="첫 번째 대상자", 대상자2="두 번째 대상자")
-async def sk_gakgwang(i: discord.Interaction, 대상자1: discord.Member, 대상자2: discord.Member):
-    await submit(i, "영문", "각광", (대상자1, 대상자2))
+@app_commands.describe(대상자1="첫 번째 대상자", 대상자2="두 번째 대상자", 지문=NOTE_DESC)
+async def sk_gakgwang(i: discord.Interaction, 대상자1: discord.Member, 대상자2: discord.Member, 지문: str = None):
+    await submit(i, "영문", "각광", (대상자1, 대상자2), note=지문)
 
 
 @tree.command(name="보호", description="영문 [보호]를 사용합니다")
-@app_commands.describe(대상자1="첫 번째 대상자", 대상자2="두 번째 대상자")
-async def sk_boho(i: discord.Interaction, 대상자1: discord.Member, 대상자2: discord.Member):
-    await submit(i, "영문", "보호", (대상자1, 대상자2))
+@app_commands.describe(대상자1="첫 번째 대상자", 대상자2="두 번째 대상자", 지문=NOTE_DESC)
+async def sk_boho(i: discord.Interaction, 대상자1: discord.Member, 대상자2: discord.Member, 지문: str = None):
+    await submit(i, "영문", "보호", (대상자1, 대상자2), note=지문)
 
 
 @tree.command(name="기도", description="영문 [기도]를 사용합니다")
-@app_commands.describe(대상자="회복할 대상자")
-async def sk_gido(i: discord.Interaction, 대상자: discord.Member):
-    await submit(i, "영문", "기도", (대상자,))
+@app_commands.describe(대상자="회복할 대상자", 지문=NOTE_DESC)
+async def sk_gido(i: discord.Interaction, 대상자: discord.Member, 지문: str = None):
+    await submit(i, "영문", "기도", (대상자,), note=지문)
 
 
 @tree.command(name="분배", description="영문 [분배]를 사용합니다")
-@app_commands.describe(대상자="체력을 나눠줄 대상자", 값="차감할 체력 (1~50)")
-async def sk_bunbae(i: discord.Interaction, 대상자: discord.Member, 값: int):
-    await submit(i, "영문", "분배", (대상자,), value=값)
+@app_commands.describe(대상자="체력을 나눠줄 대상자", 값="차감할 체력 (1~50)", 지문=NOTE_DESC)
+async def sk_bunbae(i: discord.Interaction, 대상자: discord.Member, 값: int, 지문: str = None):
+    await submit(i, "영문", "분배", (대상자,), value=값, note=지문)
 
 
 @tree.command(name="정화", description="영문 [정화]를 사용합니다")
-@app_commands.describe(대상자="정화할 대상자", 영문명="해제할 저주 이름 (비우면 첫 번째 저주)")
-async def sk_jeonghwa(i: discord.Interaction, 대상자: discord.Member, 영문명: str = None):
-    await submit(i, "영문", "정화", (대상자,), name=영문명)
+@app_commands.describe(대상자="정화할 대상자", 영문명="해제할 저주 이름 (비우면 첫 번째 저주)", 지문=NOTE_DESC)
+async def sk_jeonghwa(i: discord.Interaction, 대상자: discord.Member, 영문명: str = None, 지문: str = None):
+    await submit(i, "영문", "정화", (대상자,), name=영문명, note=지문)
 
 
 @tree.command(name="역행", description="영문 [역행]을(를) 사용합니다")
-@app_commands.describe(대상자="횟수를 늘려줄 대상", 영문명="대상자가 가진 영문 이름")
-async def sk_yeokhaeng(i: discord.Interaction, 대상자: discord.Member, 영문명: str):
-    await submit(i, "영문", "역행", (대상자,), name=영문명)
+@app_commands.describe(대상자="횟수를 늘려줄 대상", 영문명="대상자가 가진 영문 이름", 지문=NOTE_DESC)
+async def sk_yeokhaeng(i: discord.Interaction, 대상자: discord.Member, 영문명: str, 지문: str = None):
+    await submit(i, "영문", "역행", (대상자,), name=영문명, note=지문)
 
 
 @tree.command(name="역살", description="영문 [역살]을(를) 사용합니다")
-@app_commands.describe(값="차감할 체력 (1~50)")
-async def sk_yeoksal(i: discord.Interaction, 값: int):
-    await submit(i, "영문", "역살", value=값)
+@app_commands.describe(값="차감할 체력 (1~50)", 지문=NOTE_DESC)
+async def sk_yeoksal(i: discord.Interaction, 값: int, 지문: str = None):
+    await submit(i, "영문", "역살", value=값, note=지문)
 
 
 @tree.command(name="선택", description="왼쪽 또는 오른쪽을 선택합니다 (선택이 필요한 막에서만)")
@@ -1087,7 +1118,8 @@ async def cmd_side(i: discord.Interaction, 방향: app_commands.Choice[str]):
     if not p.alive: return await no("행동 불능 상태입니다.")
     if p.uid in raid.choices: return await no("이미 선택했습니다.")
     raid.choices[p.uid] = 방향.value
-    await i.response.send_message("선택을 완료했습니다.", ephemeral=True)
+    await i.response.send_message("선택을 완료했습니다.", ephemeral=True)   # 본인에게만 (입력한 선택지가 채널에 노출되지 않게)
+    await raid.channel.send(f"✅ **{p.name}**: 선택을 완료했습니다.")        # 채널 전체에는 선택 내용 없이 완료만 알림
     maybe_done(raid)
 
 
