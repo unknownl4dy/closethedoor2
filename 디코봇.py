@@ -128,9 +128,10 @@ class Raid:
 
 
 # ---------- 굴림 ----------
-def _fmt(label, base, bonus):
-    """주사위 표기 없이 숫자만. 보정이 있으면 13+6, 없으면 13"""
-    return f"{base}" + (f"+{bonus}" if bonus else "")
+def _fmt(die, fixed, bonus, level=0):
+    """주사위 눈 + 고정값(집념·불굴의 +10) + 강화 보정(강화 단계 표시). 없는 항목은 생략: 13+6(강화3) / 5+10+12(강화6)"""
+    return (f"{die}" + (f"+{fixed}" if fixed else "")
+            + (f"+{bonus}(강화{level})" if bonus else ""))
 
 
 def _join(parts):
@@ -148,11 +149,11 @@ def atk_roll(p: Player, max_dice=False):
     total, parts = 0, []
     for _ in range(2 if p.has("연사") else 1):
         if p.has("집념"):
-            base, label = (10 if max_dice else d(10)) + 10, "D10+10"
+            die, fixed = (10 if max_dice else d(10)), 10
         else:
-            base, label = (20 if max_dice else d(20)), "D20"
-        total += base + bonus
-        parts.append(_fmt(label, base, bonus))
+            die, fixed = (20 if max_dice else d(20)), 0
+        total += die + fixed + bonus
+        parts.append(_fmt(die, fixed, bonus, p.atk_up))
     return total, _join(parts)
 
 
@@ -162,11 +163,11 @@ def def_roll(p: Player):
     total, parts = 0, []
     for _ in range(2 if p.has("인내") else 1):
         if p.has("불굴"):
-            base, label = d(10) + 10, "D10+10"
+            die, fixed = d(10), 10
         else:
-            base, label = d(20), "D20"
-        total += base + bonus
-        parts.append(_fmt(label, base, bonus))
+            die, fixed = d(20), 0
+        total += die + fixed + bonus
+        parts.append(_fmt(die, fixed, bonus, p.def_up))
     return total, _join(parts)
 
 
@@ -562,7 +563,7 @@ async def run_raid(r: Raid):
                            description=clip("\n".join(acts) or "아무도 행동하지 않았다."), color=COLOR_ACT)
         em.add_field(name="사귀 피해값", value=f"**-{total}**", inline=True)
         if b.hp_public:
-            em.add_field(name="사귀 체력", value=f"{hp_bar(b.hp, b.max_hp)}\n{b.hp}/{b.max_hp}", inline=False)
+            em.add_field(name="사귀 체력", value=f"{b.hp}/{b.max_hp}", inline=True)
         await r.channel.send(embed=em)
         if boss_down:
             await r.channel.send(embed=discord.Embed(
@@ -574,7 +575,6 @@ async def run_raid(r: Raid):
             name="현재 체력",
             value=clip("\n".join(
                 f"{'💀' if not p.alive else '❤️'} **{p.name}** {p.hp}/{p.max_hp}" + (" (행동 불능)" if not p.alive else "")
-                + f"\n{hp_bar(p.hp, p.max_hp)}"
                 for p in r.players.values()), 1024),
             inline=False)
         await r.channel.send(embed=hit)
