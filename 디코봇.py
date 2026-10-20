@@ -35,7 +35,7 @@ ACTION_WINDOW = 600        # 행동 가능 시간(초) = 10분
 BASE_HP = 120
 BONUS_PER_ENHANCE = 2      # 강화 1당 +2
 MAX_SKILLS_PER_PLAYER = 2   # 한 사람이 새길 수 있는 영문 수
-MAX_ENHANCE_TOTAL = 10     # 공격강화+방어강화 합계 상한 (확인 필요)
+MAX_ENHANCE = 10           # 기본 공격, 기본 방어 각각의 강화 상한
 JINGJO_HP = 180            # 징조: 최대 체력
 
 # 상시효과 영문 (행동으로 쓰지 않고 자동 적용)
@@ -674,16 +674,16 @@ def try_enhance(uid, kind):
         info = read_player(uid)
         if not info:
             return "이번 명단에 없는 사용자입니다. 운영진에게 문의하세요."
-        level = info["atk"] + info["def"]
-        if level >= MAX_ENHANCE_TOTAL:
-            return f"이미 최대 강화({MAX_ENHANCE_TOTAL}강)입니다."
+        label = "기본 공격" if kind == "atk" else "기본 방어"
+        level = info[kind]                      # 공격/방어는 각각 따로 1강~10강
+        if level >= MAX_ENHANCE:
+            return f"{label}은(는) 이미 최대 강화({MAX_ENHANCE}강)입니다."
         nxt = level + 1
         if nxt not in info["table"]:
             return f"강화 시트에 {nxt}강 정보가 없습니다."
         prob, cost = info["table"][nxt]
         if info["stones"] < cost:
-            return f"영석이 부족합니다. ({nxt}강 필요 {cost}개 / 보유 {info['stones']}개)"
-        label = "기본 공격" if kind == "atk" else "기본 방어"
+            return f"영석이 부족합니다. ({label} {nxt}강 필요 {cost}개 / 보유 {info['stones']}개)"
         success = random.random() * 100 < prob
         if SHEET_WEBHOOK:                         # 시트에 직접 기록 (실패하면 아무것도 변하지 않음)
             res = post_enhance({
@@ -691,7 +691,7 @@ def try_enhance(uid, kind):
                 "result": "성공" if success else "실패", "cost": cost,
                 "atk_add": 1 if success and kind == "atk" else 0,
                 "def_add": 1 if success and kind == "def" else 0,
-                "max_total": MAX_ENHANCE_TOTAL})
+                "max_total": MAX_ENHANCE})
             left = res["stones"]
         else:                                     # state.json에 기록
             st = state.setdefault(str(uid), {"atk": 0, "def": 0, "spent": 0})
@@ -727,8 +727,8 @@ def load_raid(path, channel, group=None):
         au, du = int(x[2] or 0), int(x[3] or 0)
         st = bonus(uid)                       # /강화로 올린 단계를 더함 (시트 직접 기록 방식이면 없음)
         au += st.get("atk", 0); du += st.get("def", 0)
-        if au + du > MAX_ENHANCE_TOTAL:
-            warns.append(f"{name}: 강화 합계 {au + du} > {MAX_ENHANCE_TOTAL}")
+        if au > MAX_ENHANCE or du > MAX_ENHANCE:
+            warns.append(f"{name}: 강화 단계 초과 (공격 {au}, 방어 {du} / 최대 {MAX_ENHANCE})")
         skills = {}
         raw = str(x[4] or "").replace("，", ",").replace("、", ",")   # 전각 쉼표도 인식
         entries = [t for t in raw.split(",") if t.strip()]
@@ -1071,18 +1071,20 @@ async def myinfo(i: discord.Interaction):
         return await i.followup.send(f"조회 중 오류: {e}")
     if not info:
         return await i.followup.send("이번 명단에 없는 사용자입니다.")
-    lv = info["atk"] + info["def"]
     nxt = ""
-    if lv < MAX_ENHANCE_TOTAL and (lv + 1) in info["table"]:
-        pr, co = info["table"][lv + 1]
-        nxt = f"\n다음 {lv + 1}강: 성공확률 {pr:g}% / 필요 영석 {co}개"
+    for key, nm in (("atk", "기본 공격"), ("def", "기본 방어")):
+        lv = info[key]
+        if lv < MAX_ENHANCE and (lv + 1) in info["table"]:
+            nxt += f"\n다음 {nm} {lv + 1}강: 필요 영석 {info['table'][lv + 1][1]}개"
+        elif lv >= MAX_ENHANCE:
+            nxt += f"\n{nm}: 최대 강화"
     r = raids.get(i.channel_id)
     rp = r.players.get(i.user.id) if r else None
     mine = ""
     if rp:
         mine = "\n내 영문: " + (", ".join(f"{k}({'상시' if n < 0 else f'{n}/{max(n, rp.skill_max.get(k, n))}'})" for k, n in rp.skills.items()) or "없음")
     await i.followup.send(
-        f"**{info['name']}**\n기본 공격 +{info['atk']}강 / 기본 방어 +{info['def']}강 (합계 {lv}/{MAX_ENHANCE_TOTAL})\n"
+        f"**{info['name']}**\n기본 공격 +{info['atk']}강 / 기본 방어 +{info['def']}강 (각 최대 {MAX_ENHANCE}강)\n"
         f"보유 영석 {info['stones']}개{nxt}{mine}")
 
 
