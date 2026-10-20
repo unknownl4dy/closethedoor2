@@ -219,12 +219,12 @@ def prepare_act(r: Raid) -> str:
     if kind == "smash":
         t = random.choice(alive); v = smash_roll()
         r.plan = {t.uid: v}
-        r.gimmick = {"kind": kind, "preview": f"[{t.name}]에게 강타 {v}"}
+        r.gimmick = {"kind": kind, "preview": f"[{t.name}]에게 강타 [{SMASH_TEXT}]"}
         return f"{b.name}{josa(b.name, '이', '가')} **[{t.name}]**을(를) 바라본다."
     if kind == "share":
         total = 50 + d(50)
         r.gimmick = {"kind": kind, "total": total,
-                     "preview": f"쉐어 데미지 총 {total} (사귀에게 {SHARE_LIMIT} 이상 피해를 주면 회피)"}
+                     "preview": f"쉐어 데미지 [50+D50] (사귀에게 {SHARE_LIMIT} 이상 피해를 주면 회피)"}
         return (f"{b.name}{josa(b.name, '이', '가')} 축귀인들을 가늠한다.\n"
                 + red(f"사귀에게 합계 {SHARE_LIMIT} 이상 피해를 주지 못하면",
                       "쉐어 데미지(50+D50) 발동")
@@ -232,17 +232,17 @@ def prepare_act(r: Raid) -> str:
     if kind == "poison":
         t = random.choice(alive)
         r.gimmick = {"kind": kind, "target": t.uid,
-                     "preview": f"[{t.name}]에게 독 (매 막 D{POISON_DIE}, {POISON_TURNS}턴)"}
+                     "preview": f"[{t.name}]에게 독 [D{POISON_DIE}] ({POISON_TURNS}턴 지속)"}
         return (f"{b.name}{josa(b.name, '이', '가')} **[{t.name}]**을(를) 바라본다.\n"
                 + red(f"독 발동! {POISON_TURNS}턴 동안 매 막 D{POISON_DIE} 지속 피해"))
     if kind == "side":
         v = basic_roll()
-        r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 {v}"}
+        r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 [{BASIC_TEXT}]"}
         return (f"{b.name}{josa(b.name, '이', '가')} 양쪽을 번갈아 노려본다.\n"
                 "**왼쪽**과 **오른쪽** 중 하나를 `/선택`하라.\n"
                 + red("왼쪽을 고른 사람만 광역 피해를 입는다"))
     v = basic_roll()
-    r.gimmick = {"kind": "aoe", "value": v, "preview": f"전원에게 광역 {v}"}
+    r.gimmick = {"kind": "aoe", "value": v, "preview": f"전원에게 광역 [{BASIC_TEXT}]"}
     return f"{b.name}{josa(b.name, '이', '가')} 광역 공격을 준비한다."
 
 
@@ -270,6 +270,23 @@ def preroll(p: Player, a: Action):
         v, det = def_roll(p); a.pre = {"v": v, "det": det}
 
 
+def apply_heal(r: Raid, p: Player, a: Action):
+    """기도·수복·선포·분배의 회복을 쓰는 즉시 적용 (최대 체력까지만). 결과는 a.pre['got']에 기록"""
+    s = a.skill
+    if s == "기도":
+        t = r.players[a.targets[0]]; n = heal(t, a.pre["v"])
+        a.pre["got"] = [f"{t.name} +{n} ({hp_str(t)})"]
+    elif s == "수복":
+        n = heal(p, a.pre["r15"])
+        a.pre["got"] = [f"{p.name} +{n} ({hp_str(p)})"]
+    elif s == "선포":
+        amt = a.pre["v"]
+        a.pre["got"] = [f"{q.name} +{heal(q, amt)} ({hp_str(q)})" for q in r.players.values() if q.alive]
+    elif s == "분배":
+        t = r.players[a.targets[0]]; n = heal(t, a.value)
+        a.pre["got"] = [f"{t.name} +{n} ({hp_str(t)})"]
+
+
 def preview_text(a: Action, names: list) -> str:
     """영문 사용 카드에 바로 보여줄 결과 (피해·회복·보호막 수치)"""
     s, pr, t = a.skill, a.pre, (names[0] if names else "")
@@ -280,11 +297,12 @@ def preview_text(a: Action, names: list) -> str:
     if s == "행운": return f"{' + '.join(map(str, pr['x']))} = **피해 {pr['v']}**"
     if s == "역살": return f"체력 -{a.value}, 기본 공격 {shown(pr['det'], pr['v'])} + {a.value} = **피해 {pr['v'] + a.value}**"
     if s == "억제": return f"**피해 {pr['v']}**, 이번 막 사귀 공격값 -{pr['v']}"
-    if s == "기도": return f"{t} 체력 **+{pr['v']}** 회복"
-    if s == "수복": return f"**피해 {pr['v']}**, 본인 체력 +{pr['r15']} 회복"
-    if s == "선포": return f"전원 체력 **+{pr['v']}** 회복"
+    got = ", ".join(pr.get("got", []))
+    if s == "기도": return f"체력 회복 → **{got}**"
+    if s == "수복": return f"**피해 {pr['v']}**, 체력 회복 → **{got}**"
+    if s == "선포": return f"전원 체력 회복 → **{got}**"
     if s == "보호": return f"방어값 {shown(pr['det'], pr['v'])} → 보호막 **{pr['v']}**"
-    if s == "분배": return f"체력 -{a.value}, {t} 체력 +{a.value} 회복"
+    if s == "분배": return f"체력 -{a.value}, 체력 회복 → **{got}**"
     return ""
 
 
@@ -331,24 +349,20 @@ def do_action(r: Raid, c: Ctx, a: Action) -> str:
         x = a.pre["x"]; v = a.pre["v"]; c.dmg += v
         return f"{head} D10+D15+D20 {x} → {v}"
     if s == "역살":
-        p.hp -= a.value; v, det = a.pre["v"], a.pre["det"]; c.dmg += v + a.value
+        v, det = a.pre["v"], a.pre["det"]; c.dmg += v + a.value      # 체력 차감은 사용 시점에 이미 적용됨
         return f"{head} 체력 -{a.value}, 기본 공격 : {shown(det, v)} + {a.value} = {v + a.value}"
     if s == "억제":
         v = a.pre["v"]; c.dmg += v; c.reduce += v
         return f"{head} D30 → {v} 피해, 사귀 공격값 -{v}"
     if s == "기도":
-        n = heal(tg[0], a.pre["v"])
-        return f"{head} {tg[0].name} 체력 +{n} ({hp_str(tg[0])})"
+        return f"{head} 체력 회복 → {', '.join(a.pre['got'])}"
     if s == "수복":
-        r15 = a.pre["r15"]; v = a.pre["v"]; c.dmg += v; n = heal(p, r15)
-        return f"{head} 10+D15 → {v} 피해, 본인 체력 +{n} ({hp_str(p)})"
+        v = a.pre["v"]; c.dmg += v
+        return f"{head} 10+D15 → {v} 피해, 체력 회복 → {', '.join(a.pre['got'])}"
     if s == "선포":
-        amt = a.pre["v"]
-        got = [f"{q.name} +{heal(q, amt)} ({hp_str(q)})" for q in r.players.values() if q.alive]
-        return f"{head} 전원 체력 +{amt} ({', '.join(got)})"
+        return f"{head} 전원 체력 회복 → {', '.join(a.pre['got'])}"
     if s == "분배":
-        p.hp -= a.value; n = heal(tg[0], a.value)
-        return f"{head} 체력 -{a.value} ({hp_str(p)}), {tg[0].name} 체력 +{n} ({hp_str(tg[0])})"
+        return f"{head} 체력 -{a.value}, 체력 회복 → {', '.join(a.pre['got'])}"
     if s == "정화":
         t = tg[0]
         if not t.curses:
@@ -500,8 +514,11 @@ def clip(text, limit=4000):
 
 
 def hp_bar(hp, mx, n=10):
-    filled = round(n * hp / mx) if mx else 0
-    return "🟥" * filled + "⬛" * (n - filled)
+    """체력 막대: 비율에 따라 초록/노랑/빨강 칸 + 빈 칸. 체력이 남아 있으면 최소 1칸"""
+    ratio = hp / mx if mx else 0
+    filled = 0 if hp <= 0 else max(1, round(n * ratio))
+    color = "🟩" if ratio > 0.5 else ("🟨" if ratio > 0.25 else "🟥")
+    return color * filled + "⬛" * (n - filled)
 
 
 async def send_long(ch, text, limit=1900):
@@ -545,7 +562,7 @@ async def run_raid(r: Raid):
                            description=clip("\n".join(acts) or "아무도 행동하지 않았다."), color=COLOR_ACT)
         em.add_field(name="사귀 피해값", value=f"**-{total}**", inline=True)
         if b.hp_public:
-            em.add_field(name="사귀 체력", value=f"{b.hp}/{b.max_hp}", inline=True)
+            em.add_field(name="사귀 체력", value=f"{hp_bar(b.hp, b.max_hp)}\n{b.hp}/{b.max_hp}", inline=False)
         await r.channel.send(embed=em)
         if boss_down:
             await r.channel.send(embed=discord.Embed(
@@ -557,6 +574,7 @@ async def run_raid(r: Raid):
             name="현재 체력",
             value=clip("\n".join(
                 f"{'💀' if not p.alive else '❤️'} **{p.name}** {p.hp}/{p.max_hp}" + (" (행동 불능)" if not p.alive else "")
+                + f"\n{hp_bar(p.hp, p.max_hp)}"
                 for p in r.players.values()), 1024),
             inline=False)
         await r.channel.send(embed=hit)
@@ -898,6 +916,9 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         a.skill, a.targets = s, tids
         p.skills[s] -= 1
         preroll(p, a)
+        if s in ("역살", "분배"):
+            p.hp -= a.value                      # 본인 체력 차감은 쓰는 즉시 반영
+        apply_heal(raid, p, a)                   # 회복도 쓰는 즉시 반영 (최대 체력까지만)
         if s == "예지":
             txt = raid.gimmick.get("preview", "알 수 없음")
             await i.response.send_message(f"예지: 이번 전조 → {txt} (억제 등 이번 막 효과 적용 전)\n남은 시간: {remain_text(raid)}", ephemeral=True)
@@ -927,7 +948,7 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
             em.add_field(name="굴림 내역", value=f"{a.det} = {a.roll}", inline=True)
     em.add_field(name="남은 시간", value=remain_text(raid), inline=True)
     em.set_author(name=p.name)
-    em.set_footer(text=f"현재 체력 {p.hp}/{p.max_hp}")
+    em.set_footer(text=f"현재 체력 {hp_bar(p.hp, p.max_hp)} {p.hp}/{p.max_hp}")
     await i.response.send_message(embed=em)      # 모두에게 공개
     maybe_done(raid)
 
