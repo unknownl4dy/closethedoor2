@@ -21,6 +21,7 @@ import os
 import random
 import sys
 import threading
+import time
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -116,6 +117,7 @@ class Raid:
     open: bool = False
     all_done: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
+    deadline: float = 0.0          # 이번 막 행동 마감 시각 (time.monotonic 기준)
 
 
 # ---------- 굴림 ----------
@@ -151,12 +153,14 @@ def heal(t: Player, amount: int) -> int:
 
 
 # ---------- 사귀 공격 (★ 미정 - 여기만 고치면 됩니다) ----------
+BOSS_ATK_TEXT = "20+D20"   # 전조 메시지에 표시되는 사귀 공격값
+
+
 def make_boss_plan(r: Raid) -> dict:
     """전조 단계에서 호출. 반환: {축귀인 uid: 공격값}  (방어/영문 효과 적용 전 값)
-    TODO: 사귀 공격 방식(대상 수, 범위, 특수 패턴)을 정하면 여기를 채우세요.
-    지금은 임시로 생존자 1명을 무작위 지정, 공격값 D20+보너스."""
+    기믹: 이 채널(조)의 생존자 중 랜덤 1인을 쳐다보고, 그 사람에게 20+D20 피해."""
     target = random.choice([p for p in r.players.values() if p.alive])
-    return {target.uid: d(20) + r.boss.atk_bonus}
+    return {target.uid: 20 + d(20)}
 
 
 # ---------- 영문 처리 ----------
@@ -306,6 +310,11 @@ def hp_text(r: Raid):
     return f"{r.boss.hp}/{r.boss.max_hp}" if r.boss.hp_public else "???"
 
 
+def remain_text(r: Raid) -> str:
+    sec = max(0, int(r.deadline - time.monotonic()))
+    return f"{sec // 60}분 {sec % 60}초"
+
+
 async def send_long(ch, text, limit=1900):
     """디스코드 메시지 2000자 제한 때문에 줄 단위로 나눠 보냄 (인원이 많아도 안전)"""
     buf = ""
@@ -326,9 +335,10 @@ async def run_raid(r: Raid):
         r.plan = make_boss_plan(r)
         gaze = ", ".join(f"[{r.players[u].name}]" for u in r.plan)
         r.open = True
+        r.deadline = time.monotonic() + ACTION_WINDOW
         await r.channel.send(
             f"## [{r.act}막] {b.name}이(가) 등장한다.\n"
-            f"체력 {hp_text(r)} / 공격값 D20+{b.atk_bonus}\n"
+            f"체력 {hp_text(r)} / 공격값 {BOSS_ATK_TEXT}\n"
             f"{b.name}이(가) **{gaze}**을(를) 바라본다.\n"
             f"지금부터 10분 간 행동 가능 → `/행동`"
         )
@@ -647,12 +657,12 @@ async def act(i: discord.Interaction, 종류: app_commands.Choice[str], 영문: 
         p.skills[s] -= 1
         if s == "예지":
             txt = ", ".join(f"{raid.players[u].name}에게 공격값 {v}" for u, v in raid.plan.items())
-            await i.response.send_message(f"예지: 이번 전조 → {txt} (억제 등 이번 막 효과 적용 전)", ephemeral=True)
+            await i.response.send_message(f"예지: 이번 전조 → {txt} (억제 등 이번 막 효과 적용 전)\n남은 시간: {remain_text(raid)}", ephemeral=True)
             raid.actions[p.uid] = a
             if all(u in raid.actions for u, q in raid.players.items() if q.alive): raid.all_done.set()
             return
     raid.actions[p.uid] = a
-    await i.response.send_message(f"{p.name}: {'영문 ['+영문+']' if a.kind=='영문' else '기본 '+종류.name[-2:]} 선택 완료", ephemeral=True)
+    await i.response.send_message(f"{p.name}: {'영문 ['+영문+']' if a.kind=='영문' else '기본 '+종류.name[-2:]} 선택 완료\n남은 시간: {remain_text(raid)}", ephemeral=True)
     if all(u in raid.actions for u, q in raid.players.items() if q.alive):
         raid.all_done.set()
 
@@ -664,6 +674,17 @@ async def skill_ac(i: discord.Interaction, cur: str):
     if not p: return []
     names = [s for s, n in p.skills.items() if s not in PASSIVES and n > 0]
     return [app_commands.Choice(name=f"{s} (남은 {p.skills[s]}회)", value=s) for s in names if cur in s][:25]
+
+
+@tree.command(name="남은시간", description="이번 막의 남은 행동 시간을 확인합니다")
+async def remaining(i: discord.Interaction):
+    r = raids.get(i.channel_id)
+    if not r or not r.open:
+        return await i.response.send_message("지금은 행동 시간이 아닙니다.", ephemeral=True)
+    waiting = [q.name for u, q in r.players.items() if q.alive and u not in r.actions]
+    await i.response.send_message(
+        f"{r.act}막 남은 시간: {remain_text(r)}\n아직 행동하지 않은 사람: {', '.join(waiting) or '없음'}",
+        ephemeral=True)
 
 
 @tree.command(name="강화", description="영석을 사용해 기본 공격 또는 기본 방어를 강화합니다")
