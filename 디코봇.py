@@ -482,7 +482,7 @@ def try_enhance(uid, kind):
             return (f"✨ **{info['name']}**: {label} **{nxt}강 성공!** "
                     f"(영석 -{cost}, 남은 영석 {left}개)")
         return (f"💥 **{info['name']}**: {label} {nxt}강 실패... "
-                f"영석 {cost}개가 소모되었습니다. (성공확률 {prob:g}%, 남은 영석 {left}개)")
+                f"영석 {cost}개가 소모되었습니다. (남은 영석 {left}개)")
 
 
 def load_raid(path, channel, group=None):
