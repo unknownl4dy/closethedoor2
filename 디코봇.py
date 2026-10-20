@@ -755,6 +755,19 @@ async def start(i: discord.Interaction, 조: int = None):
     raid.task = asyncio.create_task(run_raid(raid))
 
 
+@축귀.command(name="막종료", description="이번 막의 행동 시간을 지금 끝내고 결과를 진행합니다")
+async def end_act(i: discord.Interaction):
+    r = raids.get(i.channel_id)
+    if not running(r) or not r.open:
+        return await i.response.send_message("지금은 행동 시간이 아닙니다.", ephemeral=True)
+    waiting = [q.name for u, q in r.players.items() if q.alive and u not in r.actions]
+    r.all_done.set()
+    msg = f"{r.act}막을 지금 종료합니다."
+    if waiting:
+        msg += f"\n행동하지 않은 사람: {', '.join(waiting)}"
+    await i.response.send_message(msg)
+
+
 @축귀.command(name="종료", description="이 채널에서 진행 중인 축귀를 종료합니다")
 async def stop(i: discord.Interaction):
     raid = raids.get(i.channel_id)
