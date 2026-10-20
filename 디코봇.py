@@ -7,7 +7,7 @@
 엑셀(raid.xlsx) 구조
   시트 "사귀"   : 이름 | 체력 | 체력공개(Y/N) | 공격보너스(D20+N의 N) | 막수 | 조(선택)
   시트 "영문"   : 영문명 | 횟수(상시효과는 비움) | 새김가능인원
-  시트 "축귀인" : 이름 | 디스코드ID | 공격강화 | 방어강화 | 영문(쉼표 구분, 모사는 '모사=강신' 형식) | 영석 | 조(1~3)
+  시트 "축귀인" : 이름 | 디스코드ID | 공격강화 | 방어강화 | 영문(쉼표 구분, 모사는 '모사=강신' 형식) | 영석 | 조(1~3) | 체력(시작 체력, 비우면 120)
   시트 "강화"   : 단계(1~10) | 성공확률(%) | 필요영석   (없으면 DEFAULT_TABLE 사용)
   ※ 시트의 공격강화/방어강화/영석은 '운영진이 지급한 값'이고, /강화로 올린 단계와 쓴 영석은 state.json에 따로 저장됩니다.
 
@@ -95,6 +95,8 @@ class Action:
     targets: list = field(default_factory=list)
     value: int = 0
     name: str = ""
+    roll: int = 0                # /공격·/방어를 누른 순간 굴린 값
+    det: str = ""               # 굴림 표시 (13+6)
 
 
 @dataclass
@@ -164,6 +166,10 @@ def def_roll(p: Player):
         total += base + bonus
         parts.append(_fmt(label, base, bonus))
     return total, _join(parts)
+
+
+def hp_str(q: Player) -> str:
+    return f"{q.hp}/{q.max_hp}"
 
 
 def heal(t: Player, amount: int) -> int:
@@ -236,10 +242,10 @@ def do_action(r: Raid, c: Ctx, a: Action) -> str:
     p = r.players[a.uid]
     b = r.boss
     if a.kind == "공격":
-        v, det = atk_roll(p); c.dmg += v
+        v, det = (a.roll, a.det) if a.det else atk_roll(p); c.dmg += v
         return f"- {p.name}: 기본 공격 : {shown(det, v)}"
     if a.kind == "방어":
-        v, det = def_roll(p); c.defended[p.uid] = v
+        v, det = (a.roll, a.det) if a.det else def_roll(p); c.defended[p.uid] = v
         return f"- {p.name}: 기본 방어 : {shown(det, v)}"
 
     s = a.skill
@@ -282,17 +288,17 @@ def do_action(r: Raid, c: Ctx, a: Action) -> str:
         return f"{head} D30 → {v} 피해, 사귀 공격값 -{v}"
     if s == "기도":
         n = heal(tg[0], 10 + d(15))
-        return f"{head} {tg[0].name} 체력 +{n}"
+        return f"{head} {tg[0].name} 체력 +{n} ({hp_str(tg[0])})"
     if s == "수복":
         r15 = d(15); v = 10 + r15; c.dmg += v; n = heal(p, r15)
-        return f"{head} 10+D15 → {v} 피해, 본인 체력 +{n}"
+        return f"{head} 10+D15 → {v} 피해, 본인 체력 +{n} ({hp_str(p)})"
     if s == "선포":
         amt = 5 + d(10)
-        got = [f"{q.name}+{heal(q, amt)}" for q in r.players.values() if q.alive]
+        got = [f"{q.name} +{heal(q, amt)} ({hp_str(q)})" for q in r.players.values() if q.alive]
         return f"{head} 전원 체력 +{amt} ({', '.join(got)})"
     if s == "분배":
         p.hp -= a.value; n = heal(tg[0], a.value)
-        return f"{head} 체력 -{a.value}, {tg[0].name} 체력 +{n}"
+        return f"{head} 체력 -{a.value} ({hp_str(p)}), {tg[0].name} 체력 +{n} ({hp_str(tg[0])})"
     if s == "정화":
         t = tg[0]
         if not t.curses:
@@ -303,7 +309,7 @@ def do_action(r: Raid, c: Ctx, a: Action) -> str:
     if s == "역행":
         return f"{head} {tg[0].name}의 [{a.name}] 사용 횟수 +1"
     if s == "예지":
-        return f"{head} 이번 전조의 결과를 미리 읽었다"
+        return ""          # 예지는 사용 즉시 채널에 알리므로 막 결과에는 넣지 않음
     return f"{head} (미구현)"
 
 
@@ -322,7 +328,9 @@ def resolve_act(r: Raid):
             log.append(f"- {p.name}: [항거] 되돌려주는 피해 {p.hanggeo_dmg}")
             p.hanggeo_dmg = 0
     for a in r.actions.values():
-        log.append(do_action(r, c, a))
+        line = do_action(r, c, a)
+        if line:
+            log.append(line)
     if not r.actions:
         log.append("- 아무도 행동하지 않았다.")
 
@@ -386,7 +394,7 @@ def resolve_act(r: Raid):
         p.last_taken = dmg
         if uid == c.redirect: p.hanggeo_dmg = dmg
         extra = f" ({', '.join(notes)})" if notes else ""
-        res.append(f"- {b.name}의 강한 공격으로 **{p.name} 체력 -{dmg}**{extra}")
+        res.append(f"- {b.name}의 강한 공격으로 **{p.name} 체력 -{dmg}** → {hp_str(p)}{extra}")
         if not p.alive:
             res.append(f"  {p.name}은(는) 행동 불능이 되었다.")
 
@@ -403,7 +411,7 @@ def resolve_act(r: Raid):
             q.hp = max(0, q.hp - dd); q.poison_left -= 1
             if dd: q.status_hit = True
             if q.poison_left <= 0: q.curses.remove("독")
-            res.append(f"- 독: **{q.name} 체력 -{dd}**" + (" (피해 무효)" if not dd else "") + f" (남은 {q.poison_left}턴)")
+            res.append(f"- 독: **{q.name} 체력 -{dd}**" + (" (피해 무효)" if not dd else "") + f" → {hp_str(q)} (남은 {q.poison_left}턴)")
             if not q.alive:
                 res.append(f"  {q.name}은(는) 행동 불능이 되었다.")
     return log, res, c.dmg, False
@@ -674,7 +682,9 @@ def load_raid(path, channel, group=None):
         if not in_group:
             continue
         p = Player(name, uid, au, du, skills)
-        if "징조" in skills: p.max_hp = JINGJO_HP
+        start_hp = int(cell(x, 7) or BASE_HP)          # 시트 '체력' 열 = 시작 체력 = 전체 체력
+        p.hp = p.max_hp = start_hp
+        if "징조" in skills: p.max_hp = max(start_hp, JINGJO_HP)   # 징조: 최대 체력만 늘고 현재 체력은 그대로
         players[uid] = p
     for s, names in holders.items():
         if s in defs and len(names) > defs[s][1]:
@@ -700,8 +710,8 @@ def make_sample():
                 ("분배", 1, 2), ("정화", 2, 2), ("역행", 1, 1), ("예지", 1, 1), ("모사", None, 1)]:
         ws.append(row)
     ws = wb.create_sheet("축귀인")
-    ws.append(["이름", "디스코드ID", "공격강화", "방어강화", "영문", "영석", "조"])
-    ws.append(["단", 123456789012345678, 0, 0, "강신,기도", 10, 1])
+    ws.append(["이름", "디스코드ID", "공격강화", "방어강화", "영문", "영석", "조", "체력"])
+    ws.append(["단", 123456789012345678, 0, 0, "강신,기도", 10, 1, 120])
     ws = wb.create_sheet("강화")
     ws.append(["단계", "성공확률(%)", "필요영석"])
     for lv, (pr, co) in DEFAULT_TABLE.items():
@@ -769,6 +779,8 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
     if p.uid in raid.actions: return await no("이번 막에는 이미 행동했습니다.")
 
     a = Action(p.uid, kind)
+    if kind == "공격": a.roll, a.det = atk_roll(p)      # 누르는 순간 굴려서 바로 보여줌
+    elif kind == "방어": a.roll, a.det = def_roll(p)
     if kind == "영문":
         s = skill
         if s not in p.skills: return await no(f"[{s}]은(는) 소지하지 않은 영문입니다.")
@@ -801,11 +813,22 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
             txt = raid.gimmick.get("preview", "알 수 없음")
             await i.response.send_message(f"예지: 이번 전조 → {txt} (억제 등 이번 막 효과 적용 전)\n남은 시간: {remain_text(raid)}", ephemeral=True)
             raid.actions[p.uid] = a
+            await raid.channel.send(f"🔮 **{p.name}**: [예지] 이번 전조의 결과를 미리 읽었다")   # 모두에게 공개
             maybe_done(raid)
             return
     raid.actions[p.uid] = a
-    what = f"영문 [{skill}]" if kind == "영문" else ("기본 공격" if kind == "공격" else "기본 방어")
-    await i.response.send_message(f"{p.name}: {what} 선택 완료\n남은 시간: {remain_text(raid)}", ephemeral=True)
+    if kind == "영문":
+        em = discord.Embed(title=f"✨ 영문 [{skill}]", description="사용을 선택했습니다.", color=0x9B59B6)
+    else:
+        atk = kind == "공격"
+        em = discord.Embed(title="⚔️ 기본 공격" if atk else "🛡️ 기본 방어",
+                           description=f"# {a.roll}", color=0xE67E22 if atk else 0x3498DB)
+        if a.det != str(a.roll):
+            em.add_field(name="굴림 내역", value=f"{a.det} = {a.roll}", inline=True)
+    em.add_field(name="남은 시간", value=remain_text(raid), inline=True)
+    em.set_author(name=p.name)
+    em.set_footer(text=f"현재 체력 {p.hp}/{p.max_hp}")
+    await i.response.send_message(embed=em, ephemeral=True)
     maybe_done(raid)
 
 
