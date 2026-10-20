@@ -75,6 +75,7 @@ class Player:
     skills: dict                 # 영문명 -> 남은 횟수 (상시효과는 -1)
     hp: int = BASE_HP
     max_hp: int = BASE_HP
+    skill_max: dict = field(default_factory=dict)   # 영문별 최대 사용 횟수 (시작 시 값)
     poison_left: int = 0         # 독 남은 턴 (사귀 3막 기믹)
     invul_until: int = 0         # 이 막까지 피해 무효 (사활)
     last_taken: int = 0          # 직전 막에 받은 피해 (복수)
@@ -97,6 +98,7 @@ class Action:
     name: str = ""
     roll: int = 0                # /공격·/방어를 누른 순간 굴린 값
     det: str = ""               # 굴림 표시 (13+6)
+    pre: dict = field(default_factory=dict)   # 영문을 쓰는 순간 미리 굴린 값
 
 
 @dataclass
@@ -245,6 +247,47 @@ def prepare_act(r: Raid) -> str:
 
 
 # ---------- 영문 처리 ----------
+def preroll(p: Player, a: Action):
+    """영문을 쓰는 순간 필요한 주사위를 모두 굴려 a.pre에 저장 (막 결과는 이 값을 그대로 사용)"""
+    s = a.skill
+    if s == "중독": a.pre = {"v": d(10) + 5}
+    elif s == "복수":
+        v, det = atk_roll(p); a.pre = {"v": v, "det": det, "extra": p.last_taken // 2}
+    elif s == "혼란":
+        v, det = atk_roll(p, max_dice=True); a.pre = {"v": v, "det": det}
+    elif s == "강신": a.pre = {"v": 30 + d(30)}
+    elif s == "천도": a.pre = {"v": nd(2, 25)}
+    elif s == "행운":
+        x = (d(10), d(15), d(20)); a.pre = {"v": sum(x), "x": x}
+    elif s == "역살":
+        v, det = atk_roll(p); a.pre = {"v": v, "det": det}
+    elif s == "억제": a.pre = {"v": d(30)}
+    elif s == "기도": a.pre = {"v": 10 + d(15)}
+    elif s == "수복":
+        r15 = d(15); a.pre = {"r15": r15, "v": 10 + r15}
+    elif s == "선포": a.pre = {"v": 5 + d(10)}
+    elif s == "보호":
+        v, det = def_roll(p); a.pre = {"v": v, "det": det}
+
+
+def preview_text(a: Action, names: list) -> str:
+    """영문 사용 카드에 바로 보여줄 결과 (피해·회복·보호막 수치)"""
+    s, pr, t = a.skill, a.pre, (names[0] if names else "")
+    if s == "중독": return f"**피해 {pr['v']}** (이후 2막 동안 매 막 {pr['v']})"
+    if s == "복수": return f"기본 공격 {shown(pr['det'], pr['v'])} + 복수 {pr['extra']} = **피해 {pr['v'] + pr['extra']}**"
+    if s == "혼란": return f"기본 공격 최대치 {shown(pr['det'], pr['v'])} = **피해 {pr['v']}**"
+    if s in ("강신", "천도"): return f"**피해 {pr['v']}**"
+    if s == "행운": return f"{' + '.join(map(str, pr['x']))} = **피해 {pr['v']}**"
+    if s == "역살": return f"체력 -{a.value}, 기본 공격 {shown(pr['det'], pr['v'])} + {a.value} = **피해 {pr['v'] + a.value}**"
+    if s == "억제": return f"**피해 {pr['v']}**, 이번 막 사귀 공격값 -{pr['v']}"
+    if s == "기도": return f"{t} 체력 **+{pr['v']}** 회복"
+    if s == "수복": return f"**피해 {pr['v']}**, 본인 체력 +{pr['r15']} 회복"
+    if s == "선포": return f"전원 체력 **+{pr['v']}** 회복"
+    if s == "보호": return f"방어값 {shown(pr['det'], pr['v'])} → 보호막 **{pr['v']}**"
+    if s == "분배": return f"체력 -{a.value}, {t} 체력 +{a.value} 회복"
+    return ""
+
+
 def do_action(r: Raid, c: Ctx, a: Action) -> str:
     p = r.players[a.uid]
     b = r.boss
@@ -268,39 +311,39 @@ def do_action(r: Raid, c: Ctx, a: Action) -> str:
         p.invul_until = r.act + 1
         return f"{head} {r.act}~{r.act + 1}막 동안 피해를 입지 않는다"
     if s == "보호":
-        v, det = def_roll(p)
+        v, det = a.pre["v"], a.pre["det"]
         for t in tg: c.shield[t.uid] += v
         return f"{head} 방어값 {shown(det, v)} → {tg[0].name}, {tg[1].name}에게 보호막 {v}"
     if s == "중독":
-        v = d(10) + 5; c.dmg += v; b.poisons.append([v, 2])
+        v = a.pre["v"]; c.dmg += v; b.poisons.append([v, 2])
         return f"{head} {v} 피해 (이후 2막 동안 매 막 {v})"
     if s == "복수":
-        extra = p.last_taken // 2; v, det = atk_roll(p); c.dmg += v + extra
+        extra = a.pre["extra"]; v, det = a.pre["v"], a.pre["det"]; c.dmg += v + extra
         return f"{head} 기본 공격 : {shown(det, v)} + 복수 {extra} = {v + extra}"
     if s == "혼란":
-        v, det = atk_roll(p, max_dice=True); c.dmg += v; p.status_hit = False
+        v, det = a.pre["v"], a.pre["det"]; c.dmg += v; p.status_hit = False
         return f"{head} 기본 공격 최대치 : {shown(det, v)}"
     if s == "강신":
-        v = 30 + d(30); c.dmg += v; return f"{head} 30+D30 → {v}"
+        v = a.pre["v"]; c.dmg += v; return f"{head} 30+D30 → {v}"
     if s == "천도":
-        v = nd(2, 25); c.dmg += v; return f"{head} 2D25 → {v}"
+        v = a.pre["v"]; c.dmg += v; return f"{head} 2D25 → {v}"
     if s == "행운":
-        x = (d(10), d(15), d(20)); v = sum(x); c.dmg += v
+        x = a.pre["x"]; v = a.pre["v"]; c.dmg += v
         return f"{head} D10+D15+D20 {x} → {v}"
     if s == "역살":
-        p.hp -= a.value; v, det = atk_roll(p); c.dmg += v + a.value
+        p.hp -= a.value; v, det = a.pre["v"], a.pre["det"]; c.dmg += v + a.value
         return f"{head} 체력 -{a.value}, 기본 공격 : {shown(det, v)} + {a.value} = {v + a.value}"
     if s == "억제":
-        v = d(30); c.dmg += v; c.reduce += v
+        v = a.pre["v"]; c.dmg += v; c.reduce += v
         return f"{head} D30 → {v} 피해, 사귀 공격값 -{v}"
     if s == "기도":
-        n = heal(tg[0], 10 + d(15))
+        n = heal(tg[0], a.pre["v"])
         return f"{head} {tg[0].name} 체력 +{n} ({hp_str(tg[0])})"
     if s == "수복":
-        r15 = d(15); v = 10 + r15; c.dmg += v; n = heal(p, r15)
+        r15 = a.pre["r15"]; v = a.pre["v"]; c.dmg += v; n = heal(p, r15)
         return f"{head} 10+D15 → {v} 피해, 본인 체력 +{n} ({hp_str(p)})"
     if s == "선포":
-        amt = 5 + d(10)
+        amt = a.pre["v"]
         got = [f"{q.name} +{heal(q, amt)} ({hp_str(q)})" for q in r.players.values() if q.alive]
         return f"{head} 전원 체력 +{amt} ({', '.join(got)})"
     if s == "분배":
@@ -689,6 +732,7 @@ def load_raid(path, channel, group=None):
         if not in_group:
             continue
         p = Player(name, uid, au, du, skills)
+        p.skill_max = dict(skills)
         start_hp = int(cell(x, 7) or BASE_HP)          # 시트 '체력' 열 = 시작 체력 = 전체 체력
         p.hp = p.max_hp = start_hp
         if "징조" in skills: p.max_hp = max(start_hp, JINGJO_HP)   # 징조: 최대 체력만 늘고 현재 체력은 그대로
@@ -784,6 +828,30 @@ async def stop(i: discord.Interaction):
     await i.response.send_message("진행 중인 축귀가 없습니다.", ephemeral=True)
 
 
+SKILL_EFFECT = {
+    "각광": "지정 2인의 피해를 대신 받는다 (피해 절반)",
+    "항거": "이번 막의 모든 피해를 대신 받고, 다음 막에 그만큼 사귀를 공격",
+    "사활": "이번 막 포함 2막 동안 피해를 입지 않는다",
+    "보호": "지정 2인에게 방어값만큼 보호막 (본인 제외)",
+    "중독": "사귀에게 D10+5 피해, 이번 막 포함 3막 지속",
+    "복수": "직전에 받은 피해의 절반을 기본 공격에 더한다",
+    "혼란": "이번 막 기본 공격 주사위가 최대로 나온다",
+    "강신": "30+D30으로 공격",
+    "천도": "2D25로 공격",
+    "행운": "D10+D15+D20으로 공격",
+    "역살": "체력을 {v} 차감하고, 그만큼 기본 공격에 더한다",
+    "억제": "D30으로 공격, 이번 막 사귀 공격값이 그만큼 감소",
+    "기도": "지정 대상의 체력을 10+D15 회복",
+    "수복": "10+D15로 공격, D15만큼 본인 체력 회복",
+    "선포": "전원의 체력을 5+D10 회복",
+    "분배": "체력을 {v} 차감하고, 지정 대상을 그만큼 회복",
+    "정화": "지정 대상의 저주를 1개 해제",
+    "역행": "지정 대상의 [{n}] 사용 횟수 +1",
+}
+TARGET_LABEL = {"각광": "대신 받는 대상", "보호": "보호 대상", "기도": "치료 대상",
+                "분배": "회복 대상", "정화": "정화 대상", "역행": "횟수 +1 대상"}
+
+
 async def submit(i: discord.Interaction, kind, skill="", members=(), value=None, name=None):
     """모든 행동 명령어가 공통으로 거치는 처리 (kind: 공격 / 방어 / 영문)"""
     async def no(msg): await i.response.send_message(msg, ephemeral=True)
@@ -829,6 +897,7 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         if s == "정화": a.name = name or ""
         a.skill, a.targets = s, tids
         p.skills[s] -= 1
+        preroll(p, a)
         if s == "예지":
             txt = raid.gimmick.get("preview", "알 수 없음")
             await i.response.send_message(f"예지: 이번 전조 → {txt} (억제 등 이번 막 효과 적용 전)\n남은 시간: {remain_text(raid)}", ephemeral=True)
@@ -838,7 +907,18 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
             return
     raid.actions[p.uid] = a
     if kind == "영문":
-        em = discord.Embed(title=f"✨ 영문 [{skill}]", description="사용을 선택했습니다.", color=0x9B59B6)
+        em = discord.Embed(title=f"✨ 영문 [{skill}]",
+                           description=SKILL_EFFECT.get(skill, "").format(v=a.value, n=a.name), color=0x9B59B6)
+        if a.targets:
+            em.add_field(name=TARGET_LABEL.get(skill, "대상"),
+                         value=", ".join(raid.players[u].name for u in a.targets), inline=True)
+        elif skill == "선포":
+            em.add_field(name="대상", value="전원", inline=True)
+        res_txt = preview_text(a, [raid.players[u].name for u in a.targets])
+        if res_txt:
+            em.add_field(name="결과", value=res_txt, inline=False)
+        n_left = p.skills.get(skill, 0)
+        em.add_field(name="남은 횟수", value=f"({n_left}/{max(n_left, p.skill_max.get(skill, n_left))})", inline=True)
     else:
         atk = kind == "공격"
         em = discord.Embed(title="⚔️ 기본 공격" if atk else "🛡️ 기본 방어",
@@ -979,7 +1059,7 @@ async def myinfo(i: discord.Interaction):
     rp = r.players.get(i.user.id) if r else None
     mine = ""
     if rp:
-        mine = "\n내 영문: " + (", ".join(f"{k}({'상시' if n < 0 else str(n) + '회'})" for k, n in rp.skills.items()) or "없음")
+        mine = "\n내 영문: " + (", ".join(f"{k}({'상시' if n < 0 else f'{n}/{max(n, rp.skill_max.get(k, n))}'})" for k, n in rp.skills.items()) or "없음")
     await i.followup.send(
         f"**{info['name']}**\n기본 공격 +{info['atk']}강 / 기본 방어 +{info['def']}강 (합계 {lv}/{MAX_ENHANCE_TOTAL})\n"
         f"보유 영석 {info['stones']}개{nxt}{mine}")
