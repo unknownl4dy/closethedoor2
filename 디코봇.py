@@ -250,7 +250,7 @@ def prepare_act(r: Raid) -> str:
         return (f"{b.name}{josa(b.name, '이', '가')} {names}에게 깃든다.\n"
                 + red("빙의에 걸린 사람의 공격값은 사귀가 아닌",
                       "자신을 제외한 팀원 2인에게 랜덤으로 들어간다",
-                      "빙의 상태에서는 방어할 수 없다 (정화로 해제)"))
+                      "빙의 상태에서는 기본 공격만 할 수 있다 (정화로 해제)"))
     if kind == "side":
         v = basic_roll()
         r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 [{BASIC_TEXT}]"}
@@ -970,8 +970,8 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         return await no(f"[{skill}]은(는) 소지하지 않은 영문입니다.")
     if not p.alive: return await no("행동 불능 상태입니다.")
     if p.uid in raid.actions: return await no("이번 막에는 이미 행동했습니다.")
-    if kind == "방어" and "빙의" in p.curses:
-        return await no("빙의 상태에서는 방어할 수 없습니다. (정화로 빙의가 해제되면 가능합니다)")
+    if kind in ("방어", "영문") and "빙의" in p.curses:
+        return await no("빙의 상태에서는 기본 공격 외에는 아무것도 할 수 없습니다. (정화로 빙의가 해제되면 가능합니다)")
 
     note = clean_note(note)
     a = Action(p.uid, kind)
