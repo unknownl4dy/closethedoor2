@@ -199,6 +199,11 @@ def josa(word, with_final, without_final):
     return without_final
 
 
+def red(*lines):
+    """임베드 안에서 빨간 글씨처럼 보이게 하는 블록 (diff 코드블록의 '-' 줄은 빨간색)"""
+    return "```diff\n" + "\n".join(f"- {x}" for x in lines) + "\n```"
+
+
 def basic_roll(): return 10 + d(20)
 def smash_roll(): return 20 + d(20)
 
@@ -219,19 +224,21 @@ def prepare_act(r: Raid) -> str:
         r.gimmick = {"kind": kind, "total": total,
                      "preview": f"쉐어 데미지 총 {total} (사귀에게 {SHARE_LIMIT} 이상 피해를 주면 회피)"}
         return (f"{b.name}{josa(b.name, '이', '가')} 축귀인들을 가늠한다.\n"
-                f"이번 막에 **사귀에게 합계 {SHARE_LIMIT} 이상** 피해를 주지 못하면 "
-                f"**쉐어 데미지(50+D50)**를 생존자 수로 나눠 맞는다.")
+                + red(f"사귀에게 합계 {SHARE_LIMIT} 이상 피해를 주지 못하면",
+                      "쉐어 데미지(50+D50) 발동")
+                + "쉐어 데미지는 생존자 수로 나눠 맞는다.")
     if kind == "poison":
         t = random.choice(alive)
         r.gimmick = {"kind": kind, "target": t.uid,
                      "preview": f"[{t.name}]에게 독 (매 막 D{POISON_DIE}, {POISON_TURNS}턴)"}
         return (f"{b.name}{josa(b.name, '이', '가')} **[{t.name}]**을(를) 바라본다.\n"
-                f"독이 퍼진다. {POISON_TURNS}턴 동안 매 막 D{POISON_DIE} 지속 피해.")
+                + red(f"독 발동! {POISON_TURNS}턴 동안 매 막 D{POISON_DIE} 지속 피해"))
     if kind == "side":
         v = basic_roll()
         r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 {v}"}
         return (f"{b.name}{josa(b.name, '이', '가')} 양쪽을 번갈아 노려본다.\n"
-                f"**왼쪽**과 **오른쪽** 중 하나를 `/선택`하라. **왼쪽**을 고른 사람만 광역 피해를 입는다.")
+                "**왼쪽**과 **오른쪽** 중 하나를 `/선택`하라.\n"
+                + red("왼쪽을 고른 사람만 광역 피해를 입는다"))
     v = basic_roll()
     r.gimmick = {"kind": "aoe", "value": v, "preview": f"전원에게 광역 {v}"}
     return f"{b.name}{josa(b.name, '이', '가')} 광역 공격을 준비한다."
@@ -841,7 +848,7 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
     em.add_field(name="남은 시간", value=remain_text(raid), inline=True)
     em.set_author(name=p.name)
     em.set_footer(text=f"현재 체력 {p.hp}/{p.max_hp}")
-    await i.response.send_message(embed=em, ephemeral=True)
+    await i.response.send_message(embed=em)      # 모두에게 공개
     maybe_done(raid)
 
 
