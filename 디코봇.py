@@ -245,10 +245,12 @@ def prepare_act(r: Raid) -> str:
             if "빙의" not in q.curses:
                 q.curses.append("빙의")              # 저주로 취급: 정화로 해제 가능
         names = ", ".join(f"[{q.name}]" for q in picks)
-        r.gimmick = {"kind": kind, "preview": f"{names}에게 빙의 (공격값이 자신을 제외한 팀원 2인에게 들어감)"}
+        r.gimmick = {"kind": kind, "picked": [q.uid for q in picks],
+                     "preview": f"{names}에게 빙의 (공격값이 자신을 제외한 팀원 2인에게 들어감)"}
         return (f"{b.name}{josa(b.name, '이', '가')} {names}에게 깃든다.\n"
                 + red("빙의에 걸린 사람의 공격값은 사귀가 아닌",
-                      "자신을 제외한 팀원 2인에게 랜덤으로 들어간다"))
+                      "자신을 제외한 팀원 2인에게 랜덤으로 들어간다",
+                      "빙의 상태에서는 방어할 수 없다 (정화로 해제)"))
     if kind == "side":
         v = basic_roll()
         r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 [{BASIC_TEXT}]"}
@@ -328,6 +330,8 @@ def preview_text(a: Action, names: list) -> str:
     if s == "선포": return f"전원 체력 회복 → **{got}**"
     if s == "보호": return f"방어값 {shown(pr['det'], pr['v'])} → 보호막 **{pr['v']}**"
     if s == "분배": return f"체력 -{a.value}, 체력 회복 → **{got}**"
+    if s == "정화":
+        return f"{t}의 저주 **'{pr['cleansed']}'** 해제" if pr.get("cleansed") else f"{t}에게 해제할 저주가 없다"
     return ""
 
 
@@ -390,11 +394,10 @@ def do_action(r: Raid, c: Ctx, a: Action) -> str:
         return f"{head} 체력 -{a.value}, 체력 회복 → {', '.join(a.pre['got'])}"
     if s == "정화":
         t = tg[0]
-        if not t.curses:
+        cur = a.pre.get("cleansed")
+        if not cur:
             return f"{head} {t.name}에게 해제할 저주가 없다"
-        cur = a.name if a.name in t.curses else t.curses[0]
-        t.curses.remove(cur)
-        return f"{head} {t.name}의 저주 '{cur}' 해제"
+        return f"{head} ✨ {t.name}의 저주 '{cur}'이(가) 해제되었다"
     if s == "역행":
         return f"{head} {tg[0].name}의 [{a.name}] 사용 횟수 +1"
     if s == "예지":
@@ -428,6 +431,10 @@ def resolve_act(r: Raid):
     # ---- 빙의 (5막 기믹): 빙의에 걸린 사람의 공격값은 사귀 대신 팀원 2인에게 ----
     friendly = {}
     if r.gimmick.get("kind") == "possess":
+        for u in r.gimmick.get("picked", []):         # 정화로 풀린 사람은 한 번 더 확실히 알림
+            q = r.players[u]
+            if "빙의" not in q.curses:
+                log.append(f"- ✨ {q.name}: 정화로 빙의가 해제되어 공격이 정상적으로 사귀에게 들어간다")
         for q in r.players.values():
             if "빙의" not in q.curses or not q.alive:
                 continue
@@ -963,6 +970,8 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         return await no(f"[{skill}]은(는) 소지하지 않은 영문입니다.")
     if not p.alive: return await no("행동 불능 상태입니다.")
     if p.uid in raid.actions: return await no("이번 막에는 이미 행동했습니다.")
+    if kind == "방어" and "빙의" in p.curses:
+        return await no("빙의 상태에서는 방어할 수 없습니다. (정화로 빙의가 해제되면 가능합니다)")
 
     note = clean_note(note)
     a = Action(p.uid, kind)
@@ -997,6 +1006,14 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         a.skill, a.targets = s, tids
         p.skills[s] -= 1
         preroll(p, a)
+        if s == "정화":                          # 저주 해제도 쓰는 즉시 반영
+            t = raid.players[tids[0]]
+            if t.curses:
+                cur = a.name if a.name in t.curses else t.curses[0]
+                t.curses.remove(cur)
+                a.pre["cleansed"] = cur
+            else:
+                a.pre["cleansed"] = None
         if s in ("역살", "분배"):
             p.hp -= a.value                      # 본인 체력 차감은 쓰는 즉시 반영
         apply_heal(raid, p, a)                   # 회복도 쓰는 즉시 반영 (최대 체력까지만)
