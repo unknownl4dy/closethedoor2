@@ -111,6 +111,7 @@ class Ctx:                       # 한 막 처리 중 임시 상태
     shield: dict = field(default_factory=lambda: defaultdict(int))
     redirect: int | None = None
     spot: list = field(default_factory=list)
+    by: dict = field(default_factory=lambda: defaultdict(int))   # 사람별로 사귀에게 입히려던 피해 (빙의용)
 
 
 @dataclass
@@ -193,7 +194,7 @@ SMASH_REVEAL_ACTS = set()        # 강타 값을 공개할 막 번호를 여기�
 SHARE_LIMIT = 100                # 쉐어 데미지: 이 값 미만으로 때리면 발동
 POISON_TURNS, POISON_DIE = 3, 15
 # 막 번호 -> 기믹 종류. 적지 않은 막은 'aoe'(기본공격 광역)
-GIMMICKS = {1: "smash", 2: "share", 3: "poison", 4: "side"}
+GIMMICKS = {1: "smash", 2: "share", 3: "poison", 4: "side", 5: "possess"}
 
 
 def josa(word, with_final, without_final):
@@ -238,6 +239,16 @@ def prepare_act(r: Raid) -> str:
                      "preview": f"[{t.name}]에게 독 [D{POISON_DIE}] ({POISON_TURNS}턴 지속)"}
         return (f"{b.name}{josa(b.name, '이', '가')} **[{t.name}]**을(를) 바라본다.\n"
                 + red(f"독 발동! {POISON_TURNS}턴 동안 매 막 D{POISON_DIE} 지속 피해"))
+    if kind == "possess":
+        picks = random.sample(alive, min(2, len(alive)))
+        for q in picks:
+            if "빙의" not in q.curses:
+                q.curses.append("빙의")              # 저주로 취급: 정화로 해제 가능
+        names = ", ".join(f"[{q.name}]" for q in picks)
+        r.gimmick = {"kind": kind, "preview": f"{names}에게 빙의 (공격값이 자신을 제외한 팀원 2인에게 들어감)"}
+        return (f"{b.name}{josa(b.name, '이', '가')} {names}에게 깃든다.\n"
+                + red("빙의에 걸린 사람의 공격값은 사귀가 아닌",
+                      "자신을 제외한 팀원 2인에게 랜덤으로 들어간다"))
     if kind == "side":
         v = basic_roll()
         r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 [{BASIC_TEXT}]"}
@@ -395,11 +406,30 @@ def resolve_act(r: Raid):
             log.append(f"- {p.name}: [항거] 되돌려주는 피해 {p.hanggeo_dmg}")
             p.hanggeo_dmg = 0
     for a in r.actions.values():
+        before = c.dmg
         line = do_action(r, c, a)
+        c.by[a.uid] += c.dmg - before
         if line:
             log.append(line)
     if not r.actions:
         log.append("- 아무도 행동하지 않았다.")
+
+    # ---- 빙의 (5막 기믹): 빙의에 걸린 사람의 공격값은 사귀 대신 팀원 2인에게 ----
+    friendly = {}
+    if r.gimmick.get("kind") == "possess":
+        for q in r.players.values():
+            if "빙의" not in q.curses or not q.alive:
+                continue
+            moved = c.by.get(q.uid, 0)
+            mates = [m for m in r.players.values() if m.alive and m.uid != q.uid]
+            if moved > 0 and mates:
+                c.dmg -= moved
+                tg = random.sample(mates, min(2, len(mates)))
+                for m in tg:
+                    friendly[m.uid] = friendly.get(m.uid, 0) + moved
+                log.append(f"- 👻 {q.name}: 빙의! 공격값 {moved}이(가) 사귀 대신 {', '.join(m.name for m in tg)}에게 들어간다")
+            else:
+                log.append(f"- 👻 {q.name}: 빙의 상태지만 넘길 공격값이 없다")
 
     b.hp = max(0, b.hp - c.dmg)
     if b.hp <= 0:
@@ -432,11 +462,15 @@ def resolve_act(r: Raid):
         res.append("- 왼쪽: " + (", ".join(q.name for q in left) or "없음")
                    + " / 오른쪽: " + (", ".join(q.name for q in alive_now if q not in left) or "없음"))
         base = {q.uid: r.gimmick["value"] for q in left}
+    elif kind == "possess":
+        base = {}
     elif kind == "aoe":
         base = {q.uid: r.gimmick["value"] for q in alive_now}
     plan = {u: max(0, v - c.reduce) for u, v in base.items()}
     if c.reduce and base:
         res.append(f"- 억제로 사귀 공격값 -{c.reduce}")
+    for u, v in friendly.items():
+        plan[u] = plan.get(u, 0) + v
     inc = dict(plan)
     if c.redirect is not None and inc:              # 항거: 전부 대신 받음
         inc = {c.redirect: sum(inc.values())}
@@ -461,9 +495,15 @@ def resolve_act(r: Raid):
         p.last_taken = dmg
         if uid == c.redirect: p.hanggeo_dmg = dmg
         extra = f" ({', '.join(notes)})" if notes else ""
-        res.append(f"- {b.name}의 강한 공격으로 **{p.name} 체력 -{dmg}** → {hp_str(p)}{extra}")
+        who = "빙의된 팀원의 공격으로" if kind == "possess" else f"{b.name}의 강한 공격으로"
+        res.append(f"- {who} **{p.name} 체력 -{dmg}** → {hp_str(p)}{extra}")
         if not p.alive:
             res.append(f"  {p.name}은(는) 행동 불능이 되었다.")
+
+    if kind == "possess":                              # 빙의는 이번 막으로 끝
+        for q in r.players.values():
+            if "빙의" in q.curses:
+                q.curses.remove("빙의")
 
     # ---- 독 (3막 기믹): 방어와 상관없이 들어가는 지속 피해, 정화로 해제 가능 ----
     for q in r.players.values():
