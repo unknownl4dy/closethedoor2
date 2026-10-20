@@ -19,6 +19,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -31,6 +32,7 @@ from discord import app_commands
 from openpyxl import Workbook, load_workbook
 
 EXCEL_PATH = "raid.xlsx"
+NEXT_ACT_DELAY = 10       # 공격 결과 카드 이후 다음 막이 나오기 전 대기 시간(초)
 ACTION_WINDOW = 600        # 행동 가능 시간(초) = 10분
 BASE_HP = 120
 BONUS_PER_ENHANCE = 2      # 강화 1당 +2
@@ -522,6 +524,15 @@ def hp_bar(hp, mx, n=10):
     return color * filled + "⬛" * (n - filled)
 
 
+def final_summary(r: Raid, title: str, desc: str, color: int):
+    """축귀가 끝났을 때 전원의 최종 체력을 정리한 카드"""
+    lines = [f"{'💀' if not q.alive else '❤️'} **{q.name}** {q.hp}/{q.max_hp}" + (" (행동 불능)" if not q.alive else "")
+             for q in r.players.values()]
+    em = discord.Embed(title=title, description=desc, color=color)
+    em.add_field(name="최종 체력", value=clip("\n".join(lines), 1024), inline=False)
+    return em
+
+
 async def send_long(ch, text, limit=1900):
     """디스코드 메시지 2000자 제한 때문에 줄 단위로 나눠 보냄 (인원이 많아도 안전)"""
     buf = ""
@@ -566,8 +577,8 @@ async def run_raid(r: Raid):
             em.add_field(name="사귀 체력", value=f"{b.hp}/{b.max_hp}", inline=True)
         await r.channel.send(embed=em)
         if boss_down:
-            await r.channel.send(embed=discord.Embed(
-                title=f"{b.name} 쓰러짐!", description="축귀가 조기 종료되었습니다.", color=COLOR_WIN))
+            await r.channel.send(embed=final_summary(
+                r, f"{b.name} 쓰러짐!", "축귀가 조기 종료되었습니다.", COLOR_WIN))
             return
         hit = discord.Embed(title=f"[{r.act}막] 공격 결과",
                             description=clip("\n".join(res) or "아무도 피해를 입지 않았다."), color=COLOR_HIT)
@@ -578,7 +589,13 @@ async def run_raid(r: Raid):
                 for p in r.players.values()), 1024),
             inline=False)
         await r.channel.send(embed=hit)
-    await r.channel.send(embed=discord.Embed(title="축귀 종료", color=COLOR_END))
+        if r.act < b.acts and b.hp > 0 and any(q.alive for q in r.players.values()):
+            await asyncio.sleep(NEXT_ACT_DELAY)          # 다음 막 전조까지 잠깐 쉬어가기
+    if any(q.alive for q in r.players.values()):
+        end_desc = f"{r.act}막까지 진행되었습니다."
+    else:
+        end_desc = "축귀인이 모두 행동 불능이 되었습니다."
+    await r.channel.send(embed=final_summary(r, "축귀 종료", end_desc, COLOR_END))
 
 
 # ---------- 엑셀 / 구글 시트 ----------
@@ -842,7 +859,7 @@ async def stop(i: discord.Interaction):
     raid = raids.get(i.channel_id)
     if running(raid):
         raid.task.cancel()
-        return await i.response.send_message("축귀를 종료했습니다.")
+        return await i.response.send_message(embed=final_summary(raid, "축귀 종료", "운영진이 축귀를 종료했습니다.", COLOR_END))
     await i.response.send_message("진행 중인 축귀가 없습니다.", ephemeral=True)
 
 
@@ -910,7 +927,7 @@ async def submit(i: discord.Interaction, kind, skill="", members=(), value=None,
         if s == "역행":
             tp = raid.players[tids[0]]
             if not name or tp.skills.get(name, -1) < 0 or name in PASSIVES:
-                return await no("대상이 가진 행동형 영문 이름을 '이름'에 입력하세요.")
+                return await no("대상이 가진 행동형 영문 이름을 '영문명'에 입력하세요.")
             a.name = name; tp.skills[name] += 1          # 즉시 +1 (대상이 이번 막에 쓸 수 있게)
         if s == "정화": a.name = name or ""
         a.skill, a.targets = s, tids
@@ -976,39 +993,39 @@ for _sk in ["항거", "사활", "중독", "복수", "혼란", "강신", "천도"
 
 
 @tree.command(name="각광", description="영문 [각광]을(를) 사용합니다")
-@app_commands.describe(대상1="첫 번째 대상", 대상2="두 번째 대상")
-async def sk_gakgwang(i: discord.Interaction, 대상1: discord.Member, 대상2: discord.Member):
-    await submit(i, "영문", "각광", (대상1, 대상2))
+@app_commands.describe(대상자1="첫 번째 대상자", 대상자2="두 번째 대상자")
+async def sk_gakgwang(i: discord.Interaction, 대상자1: discord.Member, 대상자2: discord.Member):
+    await submit(i, "영문", "각광", (대상자1, 대상자2))
 
 
 @tree.command(name="보호", description="영문 [보호]를 사용합니다")
-@app_commands.describe(대상1="첫 번째 대상", 대상2="두 번째 대상")
-async def sk_boho(i: discord.Interaction, 대상1: discord.Member, 대상2: discord.Member):
-    await submit(i, "영문", "보호", (대상1, 대상2))
+@app_commands.describe(대상자1="첫 번째 대상자", 대상자2="두 번째 대상자")
+async def sk_boho(i: discord.Interaction, 대상자1: discord.Member, 대상자2: discord.Member):
+    await submit(i, "영문", "보호", (대상자1, 대상자2))
 
 
 @tree.command(name="기도", description="영문 [기도]를 사용합니다")
-@app_commands.describe(대상="회복할 대상")
-async def sk_gido(i: discord.Interaction, 대상: discord.Member):
-    await submit(i, "영문", "기도", (대상,))
+@app_commands.describe(대상자="회복할 대상자")
+async def sk_gido(i: discord.Interaction, 대상자: discord.Member):
+    await submit(i, "영문", "기도", (대상자,))
 
 
 @tree.command(name="분배", description="영문 [분배]를 사용합니다")
-@app_commands.describe(대상="체력을 나눠줄 대상", 값="차감할 체력 (1~50)")
-async def sk_bunbae(i: discord.Interaction, 대상: discord.Member, 값: int):
-    await submit(i, "영문", "분배", (대상,), value=값)
+@app_commands.describe(대상자="체력을 나눠줄 대상자", 값="차감할 체력 (1~50)")
+async def sk_bunbae(i: discord.Interaction, 대상자: discord.Member, 값: int):
+    await submit(i, "영문", "분배", (대상자,), value=값)
 
 
 @tree.command(name="정화", description="영문 [정화]를 사용합니다")
-@app_commands.describe(대상="정화할 대상", 이름="해제할 저주 이름 (비우면 첫 번째 저주)")
-async def sk_jeonghwa(i: discord.Interaction, 대상: discord.Member, 이름: str = None):
-    await submit(i, "영문", "정화", (대상,), name=이름)
+@app_commands.describe(대상자="정화할 대상자", 영문명="해제할 저주 이름 (비우면 첫 번째 저주)")
+async def sk_jeonghwa(i: discord.Interaction, 대상자: discord.Member, 영문명: str = None):
+    await submit(i, "영문", "정화", (대상자,), name=영문명)
 
 
 @tree.command(name="역행", description="영문 [역행]을(를) 사용합니다")
-@app_commands.describe(대상="횟수를 늘려줄 대상", 이름="대상이 가진 영문 이름")
-async def sk_yeokhaeng(i: discord.Interaction, 대상: discord.Member, 이름: str):
-    await submit(i, "영문", "역행", (대상,), name=이름)
+@app_commands.describe(대상자="횟수를 늘려줄 대상", 영문명="대상자가 가진 영문 이름")
+async def sk_yeokhaeng(i: discord.Interaction, 대상자: discord.Member, 영문명: str):
+    await submit(i, "영문", "역행", (대상자,), name=영문명)
 
 
 @tree.command(name="역살", description="영문 [역살]을(를) 사용합니다")
@@ -1030,7 +1047,7 @@ async def cmd_side(i: discord.Interaction, 방향: app_commands.Choice[str]):
     if not p.alive: return await no("행동 불능 상태입니다.")
     if p.uid in raid.choices: return await no("이미 선택했습니다.")
     raid.choices[p.uid] = 방향.value
-    await i.response.send_message(f"{p.name}: **{방향.value}** 선택 완료\n남은 시간: {remain_text(raid)}", ephemeral=True)
+    await i.response.send_message("선택을 완료했습니다.", ephemeral=True)
     maybe_done(raid)
 
 
