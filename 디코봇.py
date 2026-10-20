@@ -492,7 +492,7 @@ def load_raid(path, channel, group=None):
     boss_rows = [r for r in wb["사귀"].iter_rows(min_row=2, values_only=True) if r[0]]
     b = next((r for r in boss_rows if group is not None and cell(r, 5) not in (None, "")
               and int(cell(r, 5)) == group), boss_rows[0])
-    boss = Boss(b[0], int(b[1]), int(b[1]), str(b[2]).upper() == "Y", int(b[3]), int(b[4] or 8))
+    boss = Boss(b[0], int(b[1]), int(b[1]), str(b[2]).upper() == "Y", int(b[3] or 0), int(b[4] or 8))
     defs = {}
     for x in wb["영문"].iter_rows(min_row=2, values_only=True):
         if x[0]:
@@ -582,15 +582,16 @@ async def on_ready():
 async def start(i: discord.Interaction, 조: int = None):
     if running(raids.get(i.channel_id)):
         return await i.response.send_message("이 채널에서 이미 레이드가 진행 중입니다.", ephemeral=True)
+    await i.response.defer()    # 시트를 읽는 동안 디스코드 3초 제한에 걸리지 않게 먼저 응답
     try:
         new, warns = await asyncio.to_thread(load_raid, EXCEL_PATH, i.channel, 조)
     except Exception as e:
-        return await i.response.send_message(f"엑셀 로드 실패: {e}", ephemeral=True)
+        return await i.followup.send(f"엑셀 로드 실패: {e}")
     raids[i.channel_id] = raid = new
     msg = "레이드를 시작합니다." if 조 is None else f"{조}조 레이드를 시작합니다."
     if warns:
         msg += "\n⚠ 엑셀 확인 필요\n" + "\n".join(f"- {w}" for w in warns)
-    await i.response.send_message(msg)
+    await i.followup.send(msg)
     raid.task = asyncio.create_task(run_raid(raid))
 
 
