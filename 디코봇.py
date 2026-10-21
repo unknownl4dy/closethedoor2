@@ -1155,9 +1155,9 @@ async def sk_bunbae(i: discord.Interaction, 대상자: discord.Member, 값: int,
 
 
 @tree.command(name="정화", description="영문 [정화]를 사용합니다")
-@app_commands.describe(대상자="정화할 대상자", 영문명="해제할 저주 이름 (비우면 첫 번째 저주)", 지문=NOTE_DESC)
-async def sk_jeonghwa(i: discord.Interaction, 대상자: discord.Member, 영문명: str = None, 지문: str = None):
-    await submit(i, "영문", "정화", (대상자,), name=영문명, note=지문)
+@app_commands.describe(대상자="정화할 대상자", 저주명="해제할 저주 이름 (비우면 첫 번째 저주)", 지문=NOTE_DESC)
+async def sk_jeonghwa(i: discord.Interaction, 대상자: discord.Member, 저주명: str = None, 지문: str = None):
+    await submit(i, "영문", "정화", (대상자,), name=저주명, note=지문)
 
 
 @tree.command(name="역행", description="영문 [역행]을(를) 사용합니다")
