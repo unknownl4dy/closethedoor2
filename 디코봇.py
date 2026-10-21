@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.request
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 
 import discord
@@ -127,6 +128,8 @@ class Raid:
     task: asyncio.Task | None = None
     gimmick: dict = field(default_factory=dict)   # 이번 막 기믹 정보
     choices: dict = field(default_factory=dict)   # uid -> 왼쪽/오른쪽 (4막)
+    mpc: dict = field(default_factory=dict)       # 이번 막에 부른 MPC -> 부른 사람 이름
+    mpc_note: dict = field(default_factory=dict)  # MPC -> 막 결과에 쓸 지문 (대상자 이름이 들어간 완성 문장)
     deadline: float = 0.0          # 이번 막 행동 마감 시각 (time.monotonic 기준)
 
 
@@ -410,6 +413,8 @@ def resolve_act(r: Raid):
     b = r.boss
     c = Ctx()
     log = []
+    for nm, who in r.mpc.items():
+        log.append(f"- 🌟 {who}: MPC [{nm}] — {r.mpc_note.get(nm, MPC_INFO[nm][0])}")
     for dot in b.poisons[:]:
         c.dmg += dot[0]; dot[1] -= 1
         log.append(f"- 중독: 사귀에게 지속 피해 {dot[0]}")
@@ -449,6 +454,11 @@ def resolve_act(r: Raid):
             else:
                 log.append(f"- 👻 {q.name}: 빙의 상태지만 넘길 공격값이 없다")
 
+    if "일도양단" in r.mpc:                              # MPC: 합산 공격값 1.5배 (소수점 버림)
+        boosted = c.dmg * 3 // 2
+        log.append(f"- 🌟 [일도양단] 합산 공격값 {c.dmg} → **{boosted}** (1.5배, 소수점 버림)")
+        c.dmg = boosted
+
     b.hp = max(0, b.hp - c.dmg)
     if b.hp <= 0:
         return log, [], c.dmg, True
@@ -458,7 +468,10 @@ def resolve_act(r: Raid):
     kind = r.gimmick.get("kind", "aoe")
     alive_now = [q for q in r.players.values() if q.alive]
     base = {}
-    if kind == "smash":
+    void_dmg = "천상불침" in r.mpc                        # MPC: 사귀의 이번 막 피해값 무효
+    if void_dmg:
+        res.append("- 🌟 [천상불침] 사귀의 피해값이 모두 무효가 되었다")
+    elif kind == "smash":
         base = dict(r.plan)
     elif kind == "share":
         if c.dmg >= SHARE_LIMIT:
@@ -532,7 +545,7 @@ def resolve_act(r: Raid):
             t.curses.append("독"); t.poison_left = POISON_TURNS
     for q in r.players.values():
         if q.alive and "독" in q.curses and q.poison_left > 0:
-            dd = 0 if q.invul_until >= r.act else d(POISON_DIE)
+            dd = 0 if (q.invul_until >= r.act or void_dmg) else d(POISON_DIE)
             q.hp = max(0, q.hp - dd); q.poison_left -= 1
             if dd: q.status_hit = True
             if q.poison_left <= 0: q.curses.remove("독")
@@ -550,11 +563,43 @@ def running(r):
     return bool(r and r.task and not r.task.done())
 
 
+# ===== MPC: 전체 조에서 각각 1번씩만 부를 수 있음 =====
+MPC_INFO = {   # 이름: (지문, 효과 설명)
+    "천상불침": ("의영공주의 토구가 모두를 지킨다.", "사귀의 이번 막 피해값 무효"),
+    "일도양단": ("단이 불을 피우자, 바리공주가 나아갈 길을 알려준다.", "이번 막 유저 공격값 합산 1.5배 (소수점 버림)"),
+    "고목봉춘": ("묵희가 {target}에게 비늘을 건넨다.", "대상자 1인의 체력 전체 회복"),
+}
+MPC_PATH = "mpc_state.json"
+
+
+def load_mpc():
+    try:
+        with open(MPC_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_mpc():
+    try:
+        with open(MPC_PATH, "w", encoding="utf-8") as f:
+            json.dump(mpc_used, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+mpc_used = load_mpc()   # {MPC 이름: 부른 채널ID} - 한 번 불리면 다른 조에서는 못 부름
+
+
+def needs_choice(r: Raid) -> bool:
+    return r.gimmick.get("kind") == "side" and "천상불침" not in r.mpc
+
+
 def maybe_done(r: Raid):
     """생존자 전원이 행동(4막은 선택까지) 마쳤으면 10분을 기다리지 않고 진행"""
     alive = [u for u, q in r.players.items() if q.alive]
     if all(u in r.actions for u in alive) and (
-            r.gimmick.get("kind") != "side" or all(u in r.choices for u in alive)):
+            not needs_choice(r) or all(u in r.choices for u in alive)):
         r.all_done.set()
 
 
@@ -607,7 +652,7 @@ async def run_raid(r: Raid):
     b = r.boss
     while r.act < b.acts and b.hp > 0 and any(p.alive for p in r.players.values()):
         r.act += 1
-        r.actions.clear(); r.all_done.clear()
+        r.actions.clear(); r.all_done.clear(); r.mpc.clear(); r.mpc_note.clear()
         desc = prepare_act(r)
         r.open = True
         r.deadline = time.monotonic() + ACTION_WINDOW
@@ -799,6 +844,8 @@ def load_raid(path, channel, group=None):
         if not x[0]: continue
         in_group = group is None or int(cell(x, 6) or 0) == group   # 새김 인원은 전체 기준, 참가는 해당 조만
         name, uid = x[0], int(x[1])
+        if isinstance(x[1], float):
+            warns.append(f"{name}: 디스코드ID가 숫자로 저장되어 끝자리가 깨졌을 수 있음 (ID 칸 서식을 '일반 텍스트'로 바꾸고 다시 붙여넣으세요)")
         au, du = int(x[2] or 0), int(x[3] or 0)
         st = bonus(uid)                       # /강화로 올린 단계를 더함 (시트 직접 기록 방식이면 없음)
         au += st.get("atk", 0); du += st.get("def", 0)
@@ -855,7 +902,10 @@ def make_sample():
         ws.append(row)
     ws = wb.create_sheet("축귀인")
     ws.append(["이름", "디스코드ID", "공격강화", "방어강화", "영문", "영석", "조", "체력"])
-    ws.append(["단", 123456789012345678, 0, 0, "강신,기도", 10, 1, 120])
+    ws.append(["단", "123456789012345678", 0, 0, "강신,기도", 10, 1, 120])   # ID는 반드시 텍스트로
+    ws.column_dimensions["B"].width = 24
+    for c in ws["B"][1:]:
+        c.number_format = "@"
     ws = wb.create_sheet("강화")
     ws.append(["단계", "성공확률(%)", "필요영석"])
     for lv, (pr, co) in DEFAULT_TABLE.items():
@@ -1146,7 +1196,7 @@ async def remaining(i: discord.Interaction):
     if not r or not r.open:
         return await i.response.send_message("지금은 행동 시간이 아닙니다.", ephemeral=True)
     waiting = [q.name for u, q in r.players.items()
-               if q.alive and (u not in r.actions or (r.gimmick.get("kind") == "side" and u not in r.choices))]
+               if q.alive and (u not in r.actions or (needs_choice(r) and u not in r.choices))]
     await i.response.send_message(
         f"{r.act}막 남은 시간: {remain_text(r)}\n아직 행동하지 않은 사람: {', '.join(waiting) or '없음'}",
         ephemeral=True)
@@ -1192,6 +1242,169 @@ async def myinfo(i: discord.Interaction):
     await i.followup.send(
         f"**{info['name']}**\n기본 공격 +{info['atk']}강 / 기본 방어 +{info['def']}강 (각 최대 {MAX_ENHANCE}강)\n"
         f"보유 영석 {info['stones']}개{nxt}{mine}")
+
+
+# ===================== MPC 명령어 =====================
+async def call_mpc(i: discord.Interaction, name: str, target=None):
+    async def no(msg): await i.response.send_message(msg, ephemeral=True)
+
+    raid = raids.get(i.channel_id)
+    if not raid or not raid.open:
+        return await no("이 채널에서는 지금 MPC를 부를 수 없습니다.")
+    p = raid.players.get(i.user.id)
+    if not p: return await no("이번 축귀 참가자가 아닙니다.")
+    if not p.alive: return await no("행동 불능 상태입니다.")
+    if raid.mpc:
+        return await no(f"이번 막에는 이미 MPC [{', '.join(raid.mpc)}]을(를) 불렀습니다. 한 막에 MPC는 1개만 부를 수 있습니다.")
+    if name in mpc_used:
+        return await no(f"[{name}]은(는) 이미 사용되었습니다. (<#{mpc_used[name]}>)")
+    tp = None
+    if name == "고목봉춘":                                  # 대상자 확인은 사용 기록을 남기기 전에
+        tp = raid.players.get(target.id) if target else None
+        if not tp: return await no("대상자가 이번 축귀 참가자가 아닙니다.")
+        if not tp.alive: return await no("행동 불능인 대상자는 지정할 수 없습니다.")
+    # ↑ 확인과 ↓ 기록 사이에 await가 없어서, 두 조가 동시에 불러도 한쪽만 성공함
+    mpc_used[name] = i.channel_id
+    save_mpc()
+    raid.mpc[name] = p.name
+    flavor, effect = MPC_INFO[name]
+    em = discord.Embed(title=f"🌟 MPC [{name}]", color=0xF1C40F)
+    if name == "고목봉춘":                                  # 대상자 체력을 쓰는 즉시 전부 회복
+        flavor = flavor.format(target=tp.name)
+        before = tp.hp
+        got = heal(tp, tp.max_hp - tp.hp)
+        raid.mpc_note[name] = f"{flavor} (체력 +{got} → {hp_str(tp)})"
+        em.description = f"*{flavor}*\n" + red(effect)
+        em.add_field(name="회복 대상", value=tp.name, inline=True)
+        em.add_field(name="회복 결과", value=f"{before} → {tp.hp}/{tp.max_hp} (+{got})", inline=True)
+    else:
+        em.description = f"*{flavor}*\n" + red(effect)
+    em.set_author(name=p.name)
+    em.set_footer(text="이 MPC는 이번 축귀에서 더 이상 부를 수 없습니다")
+    await i.response.send_message(embed=em)
+    maybe_done(raid)
+
+
+def add_mpc(name):                                        # 대상자가 필요 없는 MPC
+    @tree.command(name=name, description=f"MPC [{name}]을(를) 부릅니다 (전체 조에서 1번만)")
+    async def _cmd(i: discord.Interaction):
+        await call_mpc(i, name)
+
+
+for _n in MPC_INFO:
+    if _n != "고목봉춘":
+        add_mpc(_n)
+
+
+@tree.command(name="고목봉춘", description="MPC [고목봉춘]을(를) 부릅니다 (전체 조에서 1번만)")
+@app_commands.describe(대상자="체력을 전부 회복할 대상자")
+async def mpc_gomok(i: discord.Interaction, 대상자: discord.Member):
+    await call_mpc(i, "고목봉춘", 대상자)
+
+
+@축귀.command(name="mpc현황", description="MPC 사용 현황을 확인합니다")
+async def mpc_status(i: discord.Interaction):
+    lines = [f"- [{nm}] " + (f"사용됨 (<#{mpc_used[nm]}>)" if nm in mpc_used else "사용 가능") for nm in MPC_INFO]
+    await i.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@축귀.command(name="mpc초기화", description="MPC 사용 기록을 초기화합니다 (새 축귀를 시작할 때)")
+async def mpc_reset(i: discord.Interaction):
+    mpc_used.clear()
+    save_mpc()
+    await i.response.send_message("MPC 사용 기록을 초기화했습니다. 모든 MPC를 다시 부를 수 있습니다.")
+
+
+# ===================== 판정 =====================
+JUDGE_TARGET = 7   # D10을 굴려 이 값 이상이면 성공
+
+
+@tree.command(name="판정", description=f"D10을 굴려 {JUDGE_TARGET} 이상이면 성공입니다")
+@app_commands.describe(지문=NOTE_DESC)
+async def cmd_judge(i: discord.Interaction, 지문: str = None):
+    v = d(10)
+    ok = v >= JUDGE_TARGET
+    note = clean_note(지문)
+    r = raids.get(i.channel_id)
+    rp = r.players.get(i.user.id) if r else None
+    em = discord.Embed(title="🎲 판정",
+                       description=(f"*{note}*\n" if note else "") + f"# {v}\n**{'성공' if ok else '실패'}**",
+                       color=0x2ECC71 if ok else 0xE74C3C)
+    em.set_author(name=rp.name if rp else i.user.display_name)
+    em.set_footer(text=f"D10 · {JUDGE_TARGET} 이상 성공")
+    await i.response.send_message(embed=em)
+
+
+# ===================== 운세 (영석 지급) =====================
+FORTUNE_DAILY_LIMIT = 3        # 1인당 하루(한국 시간 기준) 최대 횟수. 0이면 무제한
+# (운세, 확률%, 영석 최소, 영석 최대, 한마디, 이모지, 카드 색)
+FORTUNE_TABLE = [
+    ("대길", 1,  10, 10, "하늘이 당신 편입니다. 오늘은 무엇을 해도 됩니다!", "🌟", 0xF1C40F),
+    ("중길", 4,  8,  9,  "귀인이 곁에 있습니다. 좋은 일이 이어집니다.", "✨", 0x2ECC71),
+    ("길",   10, 6,  7,  "순풍이 붑니다. 하던 대로만 하세요.", "🍀", 0x2ECC71),
+    ("소길", 20, 4,  5,  "작은 행운이 따릅니다. 소소하게 좋은 하루.", "🌼", 0x3498DB),
+    ("말길", 25, 3,  3,  "평범한 하루입니다. 서두르지 않으면 무난합니다.", "🌙", 0x3498DB),
+    ("흉",   25, 2,  2,  "조금 불안한 기운이 있습니다. 조심하세요.", "☁️", 0x95A5A6),
+    ("대흉", 15, 1,  1,  "오늘은 몸을 사리세요... 그래도 영석은 하나 챙겼습니다.", "⛈️", 0x7F8C8D),
+]
+KST = timezone(timedelta(hours=9))
+
+
+def draw_fortune():
+    pick = random.choices(FORTUNE_TABLE, weights=[x[1] for x in FORTUNE_TABLE])[0]
+    return pick, random.randint(pick[2], pick[3])
+
+
+def try_fortune(uid):
+    """(결과 dict, 오류 문구) 반환. 영석 지급까지 처리"""
+    with state_lock:
+        info = read_player(uid)
+        if not info:
+            return None, "이번 명단에 없는 사용자입니다. 운영진에게 문의하세요."
+        pick, n = draw_fortune()
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        if SHEET_WEBHOOK:                        # 시트에 직접 기록 (하루 한 번 검사도 시트에서 함)
+            try:
+                res = post_enhance({"action": "fortune", "uid": str(uid), "name": info["name"],
+                                    "stones": n, "luck": pick[0], "date": today, "limit": FORTUNE_DAILY_LIMIT})
+            except RuntimeError as e:
+                return None, str(e).replace("시트 기록 실패: ", "")
+            total, count = res["stones"], res.get("count")
+        else:
+            st = state.setdefault(str(uid), {"atk": 0, "def": 0, "spent": 0})
+            rec = st.get("fortune")
+            if isinstance(rec, dict) and rec.get("date") == today:
+                used = rec.get("count", 0)
+            elif rec == today:                       # 예전 형식(하루 한 번)으로 저장된 기록
+                used = 1
+            else:
+                used = 0
+            if FORTUNE_DAILY_LIMIT and used >= FORTUNE_DAILY_LIMIT:
+                return None, f"오늘의 운세는 {FORTUNE_DAILY_LIMIT}번 모두 확인했습니다. 내일 다시 확인하세요."
+            st["spent"] = st.get("spent", 0) - n     # 쓴 영석을 줄여서 지급
+            st["fortune"] = {"date": today, "count": used + 1}
+            save_state()
+            total, count = info["stones"] + n, used + 1
+        return {"name": info["name"], "pick": pick, "n": n, "total": total, "count": count}, None
+
+
+@tree.command(name="운세", description="오늘의 운세를 확인하고 영석을 받습니다")
+async def cmd_fortune(i: discord.Interaction):
+    await i.response.defer()
+    try:
+        res, err = await asyncio.to_thread(try_fortune, i.user.id)
+    except Exception as e:
+        return await i.followup.send(f"운세 처리 중 오류: {e}", ephemeral=True)
+    if err:
+        return await i.followup.send(err, ephemeral=True)
+    luck, _, _, _, msg, emoji, color = res["pick"]
+    em = discord.Embed(title=f"{emoji} 오늘의 운세", description=f"# {luck}\n*{msg}*", color=color)
+    em.add_field(name="획득 영석", value=f"+{res['n']}개", inline=True)
+    em.add_field(name="보유 영석", value=f"{res['total']}개", inline=True)
+    if FORTUNE_DAILY_LIMIT and res.get("count"):
+        em.set_footer(text=f"오늘 {res['count']}/{FORTUNE_DAILY_LIMIT}번째 운세")
+    em.set_author(name=res["name"])
+    await i.followup.send(embed=em)
 
 
 if __name__ == "__main__":
