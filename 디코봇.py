@@ -79,7 +79,8 @@ class Player:
     hp: int = BASE_HP
     max_hp: int = BASE_HP
     skill_max: dict = field(default_factory=dict)   # 영문별 최대 사용 횟수 (시작 시 값)
-    poison_left: int = 0         # 독 남은 턴 (사귀 3막 기믹)
+    poison_left: int = 0         # 감염 남은 턴 (사귀 2막 기믹)
+    fear_left: int = 0           # 공포 남은 막 수 (사귀 7막 기믹): 공격값 절반
     invul_until: int = 0         # 이 막까지 피해 무효 (사활)
     last_taken: int = 0          # 직전 막에 받은 피해 (복수)
     status_hit: bool = False     # 상태이상 피해를 입었는가 (혼란) - 외부에서 True로 설정
@@ -192,12 +193,13 @@ def heal(t: Player, amount: int) -> int:
 # ---------- 사귀 공격 (★ 미정 - 여기만 고치면 됩니다) ----------
 # ===== 사귀 기믹 설정 (막별) =====
 BASIC_TEXT = "10+D20"            # 기본공격(광역공격): 막 시작 때 공개
-SMASH_TEXT = "20+D20"            # 강타: 기본은 비공개(???)
+SMASH_TEXT = "D30+20"            # 강타: 기본은 비공개(???)
 SMASH_REVEAL_ACTS = set()        # 강타 값을 공개할 막 번호를 여기에 넣으면 전조에 표시 (예: {3})
-SHARE_LIMIT = 100                # 쉐어 데미지: 이 값 미만으로 때리면 발동
-POISON_TURNS, POISON_DIE = 3, 15
+SHARE_LIMIT = 100                # 3막: 공격합이 이 값 미만이면 광역 피해
+POISON_TURNS = 3                 # 감염(2막): 지속 막 수 (이번 막 포함), 피해는 5+D10
+FEAR_LIMIT, FEAR_TURNS = 30, 3   # 공포(7막): 공격값이 이 값 이하이면 걸림 / 지속 막 수
 # 막 번호 -> 기믹 종류. 적지 않은 막은 'aoe'(기본공격 광역)
-GIMMICKS = {1: "smash", 2: "share", 3: "poison", 4: "side", 5: "possess"}
+GIMMICKS = {1: "smash", 2: "poison", 3: "share", 4: "side", 5: "fear", 6: "smash", 7: "possess", 8: "side"}
 
 
 def josa(word, with_final, without_final):
@@ -214,7 +216,7 @@ def red(*lines):
 
 
 def basic_roll(): return 10 + d(20)
-def smash_roll(): return 20 + d(20)
+def smash_roll(): return 20 + d(30)
 
 
 def prepare_act(r: Raid) -> str:
@@ -229,19 +231,24 @@ def prepare_act(r: Raid) -> str:
         r.gimmick = {"kind": kind, "preview": f"[{t.name}]에게 강타 [{SMASH_TEXT}]"}
         return f"{b.name}{josa(b.name, '이', '가')} **[{t.name}]**을(를) 바라본다."
     if kind == "share":
-        total = 50 + d(50)
-        r.gimmick = {"kind": kind, "total": total,
-                     "preview": f"쉐어 데미지 [50+D50] (사귀에게 {SHARE_LIMIT} 이상 피해를 주면 회피)"}
-        return (f"{b.name}{josa(b.name, '이', '가')} 축귀인들을 가늠한다.\n"
-                + red(f"사귀에게 합계 {SHARE_LIMIT} 이상 피해를 주지 못하면",
-                      "쉐어 데미지(50+D50) 발동")
-                + "쉐어 데미지는 생존자 수로 나눠 맞는다.")
+        v = basic_roll()
+        r.gimmick = {"kind": kind, "value": v,
+                     "preview": f"이번 막 공격합 [{SHARE_LIMIT}] 미만이면 광역 피해 [{BASIC_TEXT}], 이상이면 피해 무효"}
+        return (f"{b.name}{josa(b.name, '이', '가')} 몸을 웅크리며 힘을 모은다.\n"
+                + red(f"이번 막 공격합 [{SHARE_LIMIT}] 이상 필요",
+                      f"공격합이 [{SHARE_LIMIT}] 미만이면 광역 피해"))
     if kind == "poison":
         t = random.choice(alive)
         r.gimmick = {"kind": kind, "target": t.uid,
-                     "preview": f"[{t.name}]에게 독 [D{POISON_DIE}] ({POISON_TURNS}턴 지속)"}
-        return (f"{b.name}{josa(b.name, '이', '가')} **[{t.name}]**을(를) 바라본다.\n"
-                + red(f"독 발동! {POISON_TURNS}턴 동안 매 막 D{POISON_DIE} 지속 피해"))
+                     "preview": f"[{t.name}]에게 감염 [5+D10] ({POISON_TURNS}막 지속)"}
+        return (f"보랏빛 안개가 **[{t.name}]**{josa(t.name, '을', '를')} 감싼다.\n"
+                + red("[상태이상] 감염", f"{POISON_TURNS}막 동안 매 막 5+D10 피해"))
+    if kind == "fear":
+        t = random.choice(alive)
+        r.gimmick = {"kind": kind, "target": t.uid,
+                     "preview": f"[{t.name}]의 공격값 [{FEAR_LIMIT}] 이하일 경우 공포 ({FEAR_TURNS}막 동안 공격값 절반)"}
+        return (f"{b.name}의 눈이 검게 변하며 **[{t.name}]**{josa(t.name, '을', '를')} 가리킨다.\n"
+                + red(f"[{t.name}]의 공격값 [{FEAR_LIMIT}] 이하일 경우", "[상태이상] 공포"))
     if kind == "possess":
         picks = random.sample(alive, min(2, len(alive)))
         for q in picks:
@@ -255,11 +262,12 @@ def prepare_act(r: Raid) -> str:
                       "자신을 제외한 팀원 2인에게 랜덤으로 들어간다",
                       "빙의 상태에서는 기본 공격만 할 수 있다 (정화로 해제)"))
     if kind == "side":
-        v = basic_roll()
-        r.gimmick = {"kind": kind, "value": v, "preview": f"왼쪽을 고른 사람에게 광역 [{BASIC_TEXT}]"}
-        return (f"{b.name}{josa(b.name, '이', '가')} 양쪽을 번갈아 노려본다.\n"
-                "**왼쪽**과 **오른쪽** 중 하나를 `/선택`하라.\n"
-                + red("왼쪽을 고른 사람만 광역 피해를 입는다"))
+        v = basic_roll(); hit = random.choice(["왼쪽", "오른쪽"])    # 어느 쪽을 칠지 전조 때 미리 정함 (결과 때 공개, 예지는 미리 공개)
+        r.gimmick = {"kind": kind, "value": v, "hit": hit,
+                     "preview": f"[{hit}]을 고른 사람에게 광역 [{BASIC_TEXT}]"}
+        return (f"{b.name}{josa(b.name, '이', '가')} 높게 뛰어오른다.\n"
+                "`/선택`으로 **왼쪽**, **오른쪽**을 고른다. 공격은 선택과 별개로 진행한다.\n"
+                + red("사귀가 지정한 쪽을 고른 사람만 광역 피해를 입는다"))
     v = basic_roll()
     r.gimmick = {"kind": "aoe", "value": v, "preview": f"전원에게 광역 [{BASIC_TEXT}]"}
     return f"{b.name}{josa(b.name, '이', '가')} 광역 공격을 준비한다."
@@ -433,6 +441,19 @@ def resolve_act(r: Raid):
     if not r.actions:
         log.append("- 아무도 행동하지 않았다.")
 
+    if r.gimmick.get("kind") == "fear":                 # 공포 판정용: 보정(공포·빙의) 전 대상의 공격값
+        r.gimmick["seen"] = c.by.get(r.gimmick["target"], 0)
+
+    # ---- 공포 (7막 기믹): 걸려 있는 동안 본인 공격값 절반 (소수점 버림) ----
+    for q in r.players.values():
+        if "공포" in q.curses and q.fear_left > 0 and q.alive:
+            moved = c.by.get(q.uid, 0); keep = moved // 2
+            if moved > 0:
+                c.dmg -= moved - keep; c.by[q.uid] = keep
+                log.append(f"- 😱 {q.name}: 공포! 공격값 {moved} → {keep}")
+            q.fear_left -= 1
+            if q.fear_left <= 0: q.curses.remove("공포")
+
     # ---- 빙의 (5막 기믹): 빙의에 걸린 사람의 공격값은 사귀 대신 팀원 2인에게 ----
     friendly = {}
     if r.gimmick.get("kind") == "possess":
@@ -475,24 +496,24 @@ def resolve_act(r: Raid):
         base = dict(r.plan)
     elif kind == "share":
         if c.dmg >= SHARE_LIMIT:
-            res.append(f"- 쉐어 데미지 회피! (사귀에게 {c.dmg} 피해, 기준 {SHARE_LIMIT})")
+            res.append(f"- 공격합 {c.dmg} (기준 {SHARE_LIMIT} 이상) → 사귀의 피해가 무효가 되었다!")
         else:
-            total = r.gimmick["total"]
-            share = total // max(1, len(alive_now))
-            base = {q.uid: share for q in alive_now}
-            res.append(f"- 쉐어 데미지 발동! (사귀에게 {c.dmg} 피해 < {SHARE_LIMIT}) "
-                       f"총 {total}을(를) {len(alive_now)}명이 {share}씩 나눠 맞는다")
+            base = {q.uid: r.gimmick["value"] for q in alive_now}
+            res.append(f"- 공격합 {c.dmg} (기준 {SHARE_LIMIT} 미만) → 광역 피해 발동!")
     elif kind == "side":
-        left = []
+        hit_side = r.gimmick["hit"]
+        got = []
         for q in alive_now:
             side = r.choices.get(q.uid)
             if side is None:
                 side = random.choice(["왼쪽", "오른쪽"])
                 res.append(f"- {q.name}: 선택하지 않아 {side}으로 정해졌다")
-            if side == "왼쪽": left.append(q)
-        res.append("- 왼쪽: " + (", ".join(q.name for q in left) or "없음")
-                   + " / 오른쪽: " + (", ".join(q.name for q in alive_now if q not in left) or "없음"))
-        base = {q.uid: r.gimmick["value"] for q in left}
+            if side == hit_side: got.append(q)
+        other = "오른쪽" if hit_side == "왼쪽" else "왼쪽"
+        res.append(f"- {b.name}{josa(b.name, '이', '가')} **{hit_side}**을 덮쳤다! "
+                   f"{hit_side}: " + (", ".join(q.name for q in got) or "없음")
+                   + f" / {other}: " + (", ".join(q.name for q in alive_now if q not in got) or "없음"))
+        base = {q.uid: r.gimmick["value"] for q in got}
     elif kind == "possess":
         base = {}
     elif kind == "aoe":
@@ -541,17 +562,27 @@ def resolve_act(r: Raid):
         q.status_hit = False
     if kind == "poison":
         t = r.players[r.gimmick["target"]]
-        if t.alive and "독" not in t.curses:
-            t.curses.append("독"); t.poison_left = POISON_TURNS
+        if t.alive and "감염" not in t.curses:
+            t.curses.append("감염"); t.poison_left = POISON_TURNS
     for q in r.players.values():
-        if q.alive and "독" in q.curses and q.poison_left > 0:
-            dd = 0 if (q.invul_until >= r.act or void_dmg) else d(POISON_DIE)
+        if q.alive and "감염" in q.curses and q.poison_left > 0:
+            dd = 0 if (q.invul_until >= r.act or void_dmg) else 5 + d(10)
             q.hp = max(0, q.hp - dd); q.poison_left -= 1
             if dd: q.status_hit = True
-            if q.poison_left <= 0: q.curses.remove("독")
-            res.append(f"- 독: **{q.name} 체력 -{dd}**" + (" (피해 무효)" if not dd else "") + f" → {hp_str(q)} (남은 {q.poison_left}턴)")
+            if q.poison_left <= 0: q.curses.remove("감염")
+            res.append(f"- 감염: **{q.name} 체력 -{dd}**" + (" (피해 무효)" if not dd else "") + f" → {hp_str(q)} (남은 {q.poison_left}턴)")
             if not q.alive:
                 res.append(f"  {q.name}은(는) 행동 불능이 되었다.")
+    if kind == "fear":                                 # 7막: 대상의 공격값(보정 전 원래 값)이 기준 이하면 공포
+        t = r.players[r.gimmick["target"]]
+        if t.alive:
+            val = r.gimmick.get("seen", 0)
+            if val <= FEAR_LIMIT:
+                if "공포" not in t.curses: t.curses.append("공포")
+                t.fear_left = FEAR_TURNS
+                res.append(f"- 😱 {t.name}: 공격값 {val} (기준 {FEAR_LIMIT} 이하) → **공포**! {FEAR_TURNS}막 동안 공격값 절반")
+            else:
+                res.append(f"- {t.name}: 공격값 {val} (기준 {FEAR_LIMIT} 초과) → 공포를 이겨냈다")
     return log, res, c.dmg, False
 
 
@@ -856,13 +887,16 @@ def load_raid(path, channel, group=None):
         entries = [t for t in raw.split(",") if t.strip()]
         if len(entries) > MAX_SKILLS_PER_PLAYER:
             warns.append(f"{name}: 영문 {len(entries)}개 (최대 {MAX_SKILLS_PER_PLAYER}개)")
+        direct = {t.strip() for t in raw.split(",") if t.strip() and not t.strip().startswith("모사=")}
         for s in raw.split(","):
             s = s.strip()
             if not s: continue
             if s.startswith("모사="):
-                src = s[3:]
+                src = s[3:].strip()
                 if src not in defs:
                     warns.append(f"{name}: 모사 대상 '{src}' 없음"); continue
+                if src in direct or src == "모사":      # 이미 가진 영문(또는 모사 자체)은 모사 불가
+                    warns.append(f"{name}: 이미 가진 영문 '{src}'은(는) 모사할 수 없음 (모사 무시됨)"); continue
                 skills["모사"] = -1; skills[src] = defs[src][0]
                 holders["모사"].append(name)
             elif s in defs:
