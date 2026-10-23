@@ -491,12 +491,13 @@ def resolve_act(r: Raid):
         res.append("- 🌟 [천상불침] 사귀의 피해값이 모두 무효가 되었다")
     elif kind == "smash":
         base = dict(r.plan)
+        res.append(f"- 강타 [{SMASH_TEXT}] 개인 피해")
     elif kind == "share":
         if c.dmg >= SHARE_LIMIT:
-            res.append(f"- 공격합 {c.dmg} (기준 {SHARE_LIMIT} 이상) → 사귀의 피해가 무효가 되었다!")
+            res.append(f"- 공격합 {c.dmg} (기준 {SHARE_LIMIT} 이상) → 광역 피해 무효!")
         else:
             base = {q.uid: r.gimmick["value"] for q in alive_now}
-            res.append(f"- 공격합 {c.dmg} (기준 {SHARE_LIMIT} 미만) → 광역 피해 발동!")
+            res.append(f"- 공격합 {c.dmg} (기준 {SHARE_LIMIT} 미만) → 광역 피해 [{BASIC_TEXT}] 발동!")
     elif kind == "side":
         hit_side = r.gimmick["hit"]
         got = []
@@ -507,12 +508,14 @@ def resolve_act(r: Raid):
                 res.append(f"- {q.name}: 선택하지 않아 {side}으로 정해졌다")
             if side == hit_side: got.append(q)
         other = "오른쪽" if hit_side == "왼쪽" else "왼쪽"
-        res.append(f"- {b.name}{josa(b.name, '이', '가')} **{hit_side}**을 덮쳤다! "
+        res.append(f"- {b.name}{josa(b.name, '이', '가')} **{hit_side}**을 덮쳤다! 광역 피해 [{BASIC_TEXT}] "
                    f"{hit_side}: " + (", ".join(q.name for q in got) or "없음")
                    + f" / {other}: " + (", ".join(q.name for q in alive_now if q not in got) or "없음"))
         base = {q.uid: r.gimmick["value"] for q in got}
     elif kind == "possess":
         base = {}
+        pn = ", ".join(f"[{r.players[u].name}]" for u in r.gimmick.get("picked", []))
+        res.append(f"- [상태이상] 빙의 {pn}: 공격값이 사귀 대신 자신을 제외한 팀원 2인에게 들어갔다")
     elif kind == "aoe":
         base = {q.uid: r.gimmick["value"] for q in alive_now}
     plan = {u: max(0, v - c.reduce) for u, v in base.items()}
@@ -561,6 +564,7 @@ def resolve_act(r: Raid):
         t = r.players[r.gimmick["target"]]
         if t.alive and "감염" not in t.curses:
             t.curses.append("감염"); t.poison_left = POISON_TURNS
+            res.append(f"- [상태이상] 감염 [{t.name}] 5+D10 피해 {POISON_TURNS}막 지속")
     for q in r.players.values():
         if q.alive and "감염" in q.curses and q.poison_left > 0:
             dd = 0 if (q.invul_until >= r.act or void_dmg) else 5 + d(10)
@@ -577,7 +581,7 @@ def resolve_act(r: Raid):
             if val <= FEAR_LIMIT:
                 if "공포" not in t.curses: t.curses.append("공포")
                 t.fear_left = FEAR_TURNS
-                res.append(f"- 😱 {t.name}: 공격값 {val} (기준 {FEAR_LIMIT} 이하) → **공포**! {FEAR_TURNS}막 동안 공격값 절반")
+                res.append(f"- 😱 {t.name}: 공격값 {val} (기준 {FEAR_LIMIT} 이하) → [상태이상] **공포** 공격값 절반 {FEAR_TURNS}막 지속")
             else:
                 res.append(f"- {t.name}: 공격값 {val} (기준 {FEAR_LIMIT} 초과) → 공포를 이겨냈다")
     return log, res, c.dmg, False
