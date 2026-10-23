@@ -235,14 +235,13 @@ def prepare_act(r: Raid) -> str:
         r.gimmick = {"kind": kind, "value": v,
                      "preview": f"이번 막 공격합 [{SHARE_LIMIT}] 미만이면 광역 피해 [{BASIC_TEXT}], 이상이면 피해 무효"}
         return (f"{b.name}{josa(b.name, '이', '가')} 몸을 웅크리며 힘을 모은다.\n"
-                + red(f"이번 막 공격합 [{SHARE_LIMIT}] 이상 필요",
-                      f"공격합이 [{SHARE_LIMIT}] 미만이면 광역 피해"))
+                + red(f"이번 막 공격합 [{SHARE_LIMIT}] 이상 필요"))
     if kind == "poison":
         t = random.choice(alive)
         r.gimmick = {"kind": kind, "target": t.uid,
                      "preview": f"[{t.name}]에게 감염 [5+D10] ({POISON_TURNS}막 지속)"}
         return (f"보랏빛 안개가 **[{t.name}]**{josa(t.name, '을', '를')} 감싼다.\n"
-                + red("[상태이상] 감염", f"{POISON_TURNS}막 동안 매 막 5+D10 피해"))
+                + red("[상태이상] 감염"))
     if kind == "fear":
         t = random.choice(alive)
         r.gimmick = {"kind": kind, "target": t.uid,
@@ -258,16 +257,14 @@ def prepare_act(r: Raid) -> str:
         r.gimmick = {"kind": kind, "picked": [q.uid for q in picks],
                      "preview": f"{names}에게 빙의 (공격값이 자신을 제외한 팀원 2인에게 들어감)"}
         return (f"{b.name}{josa(b.name, '이', '가')} {names}에게 깃든다.\n"
-                + red("빙의에 걸린 사람의 공격값은 사귀가 아닌",
-                      "자신을 제외한 팀원 2인에게 랜덤으로 들어간다",
-                      "빙의 상태에서는 기본 공격만 할 수 있다 (정화로 해제)"))
+                + red("[상태이상] 빙의"))
     if kind == "side":
         v = basic_roll(); hit = random.choice(["왼쪽", "오른쪽"])    # 어느 쪽을 칠지 전조 때 미리 정함 (결과 때 공개, 예지는 미리 공개)
         r.gimmick = {"kind": kind, "value": v, "hit": hit,
                      "preview": f"[{hit}]을 고른 사람에게 광역 [{BASIC_TEXT}]"}
         return (f"{b.name}{josa(b.name, '이', '가')} 높게 뛰어오른다.\n"
                 "`/선택`으로 **왼쪽**, **오른쪽**을 고른다. 공격은 선택과 별개로 진행한다.\n"
-                + red("사귀가 지정한 쪽을 고른 사람만 광역 피해를 입는다"))
+                )
     v = basic_roll()
     r.gimmick = {"kind": "aoe", "value": v, "preview": f"전원에게 광역 [{BASIC_TEXT}]"}
     return f"{b.name}{josa(b.name, '이', '가')} 광역 공격을 준비한다."
